@@ -17,6 +17,7 @@
 **Form Factor:** 85x54mm credit-card, built-in 46-key keyboard, 1.9" ST7789v3 LCD, 1500mAh battery  
 **Build System:** Fork of `pi-gen` (official Raspberry Pi OS image builder) with custom stages  
 **Base OS:** Debian 12 (bookworm) minimal + Kali Rolling repository overlay  
+**Display:** **Wayland (cage kiosk) primary**, Xorg+i3 TUI fallback — big icon GUI launcher for 1.9" screen  
 **Status:** PRE-RELEASE — hardware not yet shipped, GPIO pinout pending final DTS
 
 ---
@@ -35,11 +36,12 @@ zeroday-os/
 │   ├── stage3/                       # ZERO-DAY OS core (our Stage A)
 │   │   ├── 00-configure-base         #   System tuning, users, locale
 │   │   ├── 01-kernel-dtb             #   Custom kernel + device tree
-│   │   ├── 02-xorg-i3               #   Minimal X + i3 WM
-│   │   ├── 03-boot-scripts           #   Auto-start, panic, power mgmt
-│   │   ├── 04-hardware-enable        #   LCD, keyboard, audio, IMU, RTC
-│   │   ├── 05-terminal-st            #   st terminal, fbterm fallback
-│   │   └── 06-flipper-tui            #   Pygame GUI launcher
+│   │   ├── 02-wayland-cage           #   Wayland cage compositor (primary GUI)
+│   │   ├── 03-xorg-i3                #   Xorg + i3 WM (TUI fallback)
+│   │   ├── 04-boot-scripts           #   Auto-start, panic, power mgmt
+│   │   ├── 05-hardware-enable        #   LCD, keyboard, audio, IMU, RTC
+│   │   ├── 06-terminal-st            #   st terminal, fbterm fallback, foot
+│   │   └── 07-gui-launcher           #   Pygame GUI launcher (big icons)
 │   ├── stage4/                       # Hacking tools (our Stage B)
 │   │   ├── 00-kali-repos             #   Add Kali rolling repos
 │   │   ├── 01-wifi-tools             #   aircrack-ng, hcxdumptool, hostapd
@@ -54,7 +56,8 @@ zeroday-os/
 │   │   ├── 10-wifi-dongle            #   RTL8821CU DKMS driver
 │   │   ├── 11-subghz-nfc-tools       #   Sub-GHz CC1101 + NFC PN532 tools
 │   │   ├── 12-meshtastic-tools       #   Meshtastic LoRa mesh
-│   │   └── 13-media-tools             #   ffplay, alsa-utils (radio + walkie-talkie)
+│   │   ├── 13-media-tools             #   ffplay, alsa-utils (radio + walkie-talkie)
+│   │   └── 14-games-entertainment      #   DOOM, RetroArch, yt-dlp, cage, mpv
 │   ├── stage5/                       # Zero-touch setup (our Stage C)
 │   │   ├── 00-first-boot             #   First-boot wizard
 │   │   ├── 01-opencode               #   OpenCode CLI install
@@ -130,7 +133,10 @@ zeroday-os/
 │   │   ├── rf-capture
 │   │   ├── cardputer-battery
 │   │   ├── monsterctl
-│   │   └── install-janos             # JanOS-app installer/launcher
+│   │   ├── install-janos             # JanOS-app installer/launcher
+│   │   ├── yt                         # YouTube search/play/download
+│   │   ├── doom-play                  # DOOM launcher (chocolate-doom)
+│   │   └── retro-play                 # Retro game emulator (RetroArch)
 │   ├── system/
 │   │   ├── panic
 │   │   ├── zeroday-bootanim        # Boot animation (glitch ASCII)
@@ -149,16 +155,24 @@ zeroday-os/
 ├── configs/                          # System configs
 │   ├── i3/
 │   │   └── config                    #   i3 keybindings + Omni-Key
+│   ├── sway/
+│   │   └── config                    #   Sway Wayland config (alternative WM)
 │   ├── st/
 │   │   └── config.h                  #   st terminal config (small screen)
 │   ├── systemd/
 │   │   ├── zeroday-boot.service      #   Boot orchestration
+│   │   ├── zeroday-gui.service       #   Wayland cage kiosk (primary)
+│   │   ├── zeroday-tui.service       #   Xorg+i3 TUI (fallback)
 │   │   ├── panic.service             #   Emergency kill service
 │   │   ├── tamper-watch.service      #   IMU tamper detection
 │   │   ├── power-governor.service    #   CPU frequency scaling
 │   │   └── opencode.service         #   OpenCode launch service
+│   ├── wayland/
+│   │   └── cage.env                  #   Cage kiosk environment vars
 │   ├── fbterm/
 │   │   └── fbterm.conf               #   Framebuffer terminal config
+│   ├── retroarch/
+│   │   └── retroarch.cfg             #   RetroArch config (LCD optimized)
 │   ├── xorg/
 │   │   └── xorg.conf                 #   Minimal X config for ST7789
 │   ├── bash/
@@ -210,32 +224,38 @@ zeroday-os/
 │         │  │  ├─ Play boot animation             │             │
 │         │  │  │  (zeroday-bootanim — glitch ASCII)│            │
 │         │  │  ├─ Auto-login root on tty1         │             │
-│         │  │  └─ Start i3 via startx             │             │
+│         │  │  └─ Start cage (Wayland kiosk)      │             │
 │         │  └─────────────────────────────────────┘             │
 │         │                                                       │
-│  [5.0s] Xorg + i3                                             │
-│         │  st terminal auto-starts                             │
-│         │  tmux default session created                        │
+│  [4.0s] cage (Wayland compositor)                             │
+│         │  cage launches cyber_launcher fullscreen              │
+│         │  SDL2/Pygame renders on Wayland DRM/KMS              │
+│         │  GUI mode: big icon grid (5×3 on 320×170)            │
+│         │  If cage fails → zeroday-tui.service takes over      │
+│         │  (Xorg + i3 + st → TUI fallback)                    │
 │         │                                                       │
-│  [6.0s] cyber_launcher GUI (Pygame)                          │
-│         │  Auto-launches full-screen in st                     │
-│         │  Binds to the ST7789 framebuffer                    │
-│         │  2x5 category grid renders on 1.9"                  │
+│  [5.0s] cyber_launcher (Pygame GUI)                           │
+│         │  Renders full-screen on ST7789v3                    │
+│         │  16 category icons in grid layout                    │
+│         │  HDMI output: ZERODAY_DISPLAY=hdmi                   │
 │         │                                                       │
 │  [7.0s] READY                                                  │
 │         │  WiFi: down (stealth by default)                     │
 │         │  BT: down (stealth by default)                       │
 │         │  Radios activated only on user command               │
 │         │  Battery check: cardputer-battery                    │
+│         │  Games: DOOM + RetroArch ready                       │
+│         │  YouTube: yt-dlp ready (needs WiFi)                  │
 │         │                                                       │
 └────────────────────────────────────────────────────────────────┘
 ```
 
 **Key boot decisions:**
-- **No display manager.** Auto-login `root` on `tty1`, `.bash_profile` launches `startx` with i3.
+- **Wayland GUI primary.** cage (kiosk compositor) launches cyber_launcher fullscreen. Xorg+i3 is the TUI fallback, started by `zeroday-tui.service` only if cage fails.
 - **Radios OFF at boot.** WiFi and Bluetooth are disabled by default. Activated only when you need them. Zero RF signature on power-up.
-- **GPU mem capped at 16MB.** We're running a TUI, not a desktop. The other 496MB belongs to userland.
-- **HDMI disabled by default.** `hdmi_force_hotplug=0`. The 1.9" LCD is the primary display. HDMI can be enabled via `cardputer-hdmi on`.
+- **GPU mem capped at 16MB.** We're running a single-app GUI on a tiny screen. The other 496MB belongs to userland.
+- **HDMI disabled by default.** `hdmi_force_hotplug=0`. The 1.9" LCD is the primary display. HDMI can be enabled via `export ZERODAY_DISPLAY=hdmi` for YouTube/DOOM/retro gaming on external monitor.
+- **GUI launcher uses big icons.** 16 categories displayed as large, high-contrast icons optimized for the 1.9" screen. Full-color, full-icon grid — not a text list.
 
 ---
 
@@ -247,20 +267,17 @@ Every megabyte is accounted for:
 |---|---|---|
 | **Linux Kernel** | ~12 MB | Stripped config, no unused modules |
 | **systemd** | ~15 MB | Minimal units, no NetworkManager |
-| **Xorg** | ~20 MB | fbdev driver, no GPU acceleration |
-| **i3 WM** | ~5 MB | Tiling only, no decorations |
-| **st terminal** | ~3 MB | Single instance, tmux handles splits |
-| **tmux** | ~4 MB | Session management |
-| **Pygame GUI** | ~25 MB | Python + pygame + SDL2 |
+| **cage (Wayland)** | ~3 MB | Kiosk compositor, primary display |
+| **Pygame GUI** | ~25 MB | Python + pygame + SDL2 (big icons) |
 | **Bash + core utils** | ~10 MB | Busybox where possible |
 | **dropbear (SSH)** | ~2 MB | On-demand only, not running at boot |
 | **wpa_supplicant** | ~8 MB | Started on-demand only |
 | **bluetoothd** | ~10 MB | Started on-demand only |
 | **Reserved GPU** | ~16 MB | Capped via `gpu_mem=16` |
-| **TOTAL SYSTEM** | **~130 MB** | |
-| **FREE FOR TOOLS** | **~382 MB** | Enough for nmap, aircrack, hashcat |
+| **TOTAL SYSTEM** | **~101 MB** | |
+| **FREE FOR TOOLS** | **~411 MB** | Enough for nmap, aircrack, DOOM, retro gaming |
 
-When a heavy tool runs (like Metasploit), the TUI can be backgrounded to free ~25MB. The `power-mode stealth` profile drops to single core and kills Xorg entirely (switching to fbterm direct), saving another ~25MB.
+When a heavy tool runs (like Metasploit), the GUI can be backgrounded. The `power-mode stealth` profile kills cage and drops to fbterm direct, saving ~28MB. YouTube video playback uses mpv (Wayland-native), which streams without buffering the full file.
 
 ---
 
@@ -337,9 +354,39 @@ systemctl disable triggerhappy
 # Build in: SPI, I2C, I2S, CSI, GPIO, framebuffer
 ```
 
-#### 03-stage/02-xorg-i3
+#### 03-stage/02-wayland-cage
 ```bash
-# Install minimal X + i3
+# Install Wayland kiosk compositor (PRIMARY display system)
+# cage runs cyber_launcher fullscreen — no window manager overhead
+apt install -y --no-install-recommends \
+    cage \
+    libwayland-client0 \
+    libwayland-cursor0 \
+    wayland-protocols
+
+# If cage is unavailable, zeroday-tui.service (Xorg+i3) takes over
+# See zeroday-tui.service for fallback
+
+# cage is a kiosk Wayland compositor:
+#   - Runs ONE client fullscreen (cyber_launcher)
+#   - No window decorations, no workspace switching
+#   - ~3MB RAM vs ~25MB for Xorg+i3+st
+#   - Direct DRM/KMS rendering on ST7789v3
+#   - SDL2 Pygame uses Wayland backend natively
+
+# Environment variables for cage + Pygame:
+#   WAYLAND_DISPLAY=wayland-0
+#   SDL_VIDEODRIVER=wayland
+#   PYGAME_HIDE_SUPPORT_PROMPT=1
+#   SDL_RENDER_DRIVER=opengles2
+
+# Set cage as default display service
+systemctl enable zeroday-gui.service
+```
+
+#### 03-stage/03-xorg-i3
+```bash
+# Install Xorg + i3 (TUI FALLBACK — only used if cage/Wayland fails)
 apt install -y --no-install-recommends \
     xserver-xorg-core \
     xserver-xorg-video-fbdev \
@@ -348,6 +395,10 @@ apt install -y --no-install-recommends \
     i3status \
     stterm \
     xdotool
+
+# Xorg is the TUI fallback display system
+# zeroday-tui.service starts Xorg+i3 only if cage (Wayland) fails
+# i3 config: same keybindings as GUI mode (Fn = Alt)
 
 # Configure Xorg for ST7789v3
 # /etc/X11/xorg.conf:
@@ -480,26 +531,32 @@ apt install -y --no-install-recommends \
 #   color-mode=256
 ```
 
-#### 03-stage/06-flipper-tui
+#### 03-stage/07-gui-launcher
 ```bash
-# cyber_launcher — Python Pygame application
+# cyber_launcher — Python Pygame GUI application (PRIMARY display)
 # /usr/local/bin/cyber_launcher
+#
+# Display: Wayland (cage kiosk) primary, Xorg+i3 TUI fallback
 #
 # Architecture:
 #   App (Pygame)
-#   ├── State: HOME (Level 1 — 4x3 icon grid)
-#   │   ├── [WIFI]  → List → Action/Prompt
-#   │   ├── [M5MONSTER] → List → Action/Prompt
-#   │   ├── [NET]   → List → Action/Prompt
-#   │   ├── [BT]    → List → Action/Prompt
-#   │   ├── [IR]    → List → Action/Prompt
-#   │   ├── [CAM]   → List → Action/Prompt
-#   │   ├── [PAYLD] → List → Action/Prompt
-#   │   ├── [RADIO] → List → WALKIE_TALKIE inline
-#   │   ├── [MEDIA] → List → MEDIA_PLAYER inline
-#   │   ├── [SHELL] → List → Action/Prompt
-#   │   ├── [SYS]   → List → Action/Prompt
-#   │   └── [OPEN]  → List → Action/Prompt
+#   ├── State: HOME (Level 1 — big icon grid, 4×4 on 320×170)
+#   │   ├── [WIFI]    → List → Action/Prompt     (Cyan)
+#   │   ├── [M5MON]   → List → Action/Prompt     (Red)
+#   │   ├── [NET]     → List → Action/Prompt     (Blue)
+#   │   ├── [BT]      → List → Action/Prompt     (Soft Blue)
+#   │   ├── [IR]      → List → Action/Prompt     (Orange)
+#   │   ├── [CAM]     → List → Action/Prompt     (Pink)
+#   │   ├── [PAYLD]   → List → Action/Prompt     (Gold)
+#   │   ├── [RADIO]   → List → WALKIE_TALKIE     (Purple)
+#   │   ├── [MEDIA]   → List → MEDIA_PLAYER       (Green)
+#   │   ├── [YT]      → List → Action/Prompt     (YouTube Red)
+#   │   ├── [GAMES]   → List → Action/Prompt     (Gaming Purple)
+#   │   ├── [RETRO]   → List → Action/Prompt     (Retro Orange)
+#   │   ├── [SHELL]   → List → Action/Prompt     (Red)
+#   │   ├── [SYS]     → List → Action/Prompt     (Grey)
+#   │   ├── [OPENCODE]→ List → Action/Prompt     (Yellow)
+#   │   └── [OPEN]    → FILE_BROWSER              (Cyan)
 #   │
 #   ├── State: LIST (Level 2 — scrollable tool list)
 #   │   └── Each category has its tools listed with descriptions
@@ -507,12 +564,17 @@ apt install -y --no-install-recommends \
 #   └── State: PROMPT (Level 3 — argument input for commands)
 #       ├── Input validation with regex per argument type
 #       ├── shlex.quote() for all arguments
-#       ├── [Enter] to execute (spawns st terminal)
+#       ├── [Enter] to execute (spawns st or foot terminal)
 #       └── [Tab] to cycle between argument fields
 #
 # Inline states (no terminal spawn):
 #   WALKIE_TALKIE: UDP broadcast PTT, port 42420, 30s timeout
 #   MEDIA_PLAYER:  ffplay-based radio + local music (shuffle)
+#
+# New categories (Entertainment):
+#   YT: YouTube search/play/audio/download via yt-dlp + ffplay/mpv
+#   GAMES: DOOM (chocolate-doom) — shareware + FreeDOOM WADs pre-installed
+#   RETRO: RetroArch + NES/SNES/GB/GBC/GBA/Genesis emulator cores
 #
 # Key bindings:
 #   ↑↓←→   Navigate
@@ -520,7 +582,8 @@ apt install -y --no-install-recommends \
 #   Esc     Go back / Exit
 #   Space   PTT (Walkie Talkie mode only)
 #
-# The GUI renders via Pygame (SDL2) on DRM/KMS or X11
+# The GUI renders via Pygame (SDL2) on Wayland DRM/KMS (primary)
+# or X11 (fallback via zeroday-tui.service)
 ```
 
 ### Stage 4 — Hacking Tools (Custom)
@@ -740,6 +803,115 @@ apt install -y --no-install-recommends \
 # music-player — Local music player via ffplay (shuffle from /opt/cardputer/music)
 ```
 
+### Stage 4.5 — Games & Entertainment (Custom)
+
+#### 04-stage/14-games-entertainment
+```bash
+# ─────────────────────────────────────────────────────────────
+# DOOM — The classic FPS, runs natively on ARM64
+# ─────────────────────────────────────────────────────────────
+apt install -y --no-install-recommends \
+    chocolate-doom \
+    freedoom
+
+# chocolate-doom: faithful DOOM port, runs at 320x200 natively
+# freedoom: completely free WAD files (Phase 1 + Phase 2)
+# /opt/cardputer/doom/wads/ — WAD directory
+#
+# doom-play play [wad]     → Launch DOOM (auto-detect WAD)
+# doom-play shareware      → Download/setup shareware WAD
+# doom-play list            → List installed WADs
+#
+# On LCD: scales to 320x170 (DOOM's native 320x200 is nearly perfect!)
+# On HDMI: fullscreen 1080p with ZERODAY_DISPLAY=hdmi
+#
+# Keyboard mapping (46-key):
+#   W/A/S/D or Arrows = Move
+#   Space = Use/Open
+#   Ctrl or Left Shift = Fire
+#   Tab = Map
+#   1-7 = Select weapon
+#   Esc = Menu
+
+# ─────────────────────────────────────────────────────────────
+# RetroArch — Multi-system emulator
+# ─────────────────────────────────────────────────────────────
+apt install -y --no-install-recommends \
+    retroarch \
+    libretro-fceumm \
+    libretro-snes9x \
+    libretro-gambatte \
+    libretro-mgba \
+    libretro-genesisplusgx
+
+# Emulator cores installed:
+#   FCEUmm          → NES / Famicom
+#   Snes9x          → SNES / Super Famicom
+#   Gambatte         → Game Boy / Game Boy Color
+#   mGBA             → Game Boy Advance
+#   Genesis Plus GX  → Sega Genesis / Mega Drive / Master System
+#
+# ROM directories: /opt/cardputer/retro/roms/<system>/
+# Saves: /opt/cardputer/retro/saves/
+# RetroArch config: /opt/cardputer/config/retroarch/retroarch.cfg
+#
+# retro-play play nes <rom>     → Launch NES game
+# retro-play play gba <rom>     → Launch GBA game
+# retro-play list [system]       → List ROMs
+# retro-play cores               → Check installed cores
+# retro-play setup                → Configure RetroArch for LCD
+
+# ─────────────────────────────────────────────────────────────
+# YouTube — Search, play, download videos
+# ─────────────────────────────────────────────────────────────
+apt install -y --no-install-recommends \
+    yt-dlp \
+    mpv
+
+# yt-dlp: YouTube CLI downloader (search, stream URLs, download)
+# mpv: Wayland-native video player (better than ffplay for streaming)
+# ffplay: fallback player (already installed via media-tools)
+#
+# On LCD: audio-only mode (yt audio) — video scaled down or hidden
+# On HDMI: full video playback with ZERODAY_DISPLAY=hdmi
+#
+# yt search <query>            → Search and select video
+# yt play <url|id>             → Stream video (480p max on arm64)
+# yt audio <url|id>            → Audio only (saves battery)
+# yt download <url>            → Download video to SD card
+# yt download-audio <url>      → Download audio (OPUS)
+# yt trending                   → Browse trending videos
+# yt history                    → Show play history
+#
+# Output directory: /opt/cardputer/loot/yt/
+# Play history: /opt/cardputer/config/yt_history.txt
+
+# ─────────────────────────────────────────────────────────────
+# Wayland GUI — Primary display system
+# ─────────────────────────────────────────────────────────────
+apt install -y --no-install-recommends \
+    cage \
+    foot
+
+# cage: Wayland kiosk compositor (primary display)
+#   - Runs cyber_launcher fullscreen, single client
+#   - ~3MB RAM, no window manager overhead
+#   - Direct DRM/KMS rendering
+#   - If cage fails → zeroday-tui.service (Xorg+i3) takes over
+#
+# foot: Wayland-native terminal (lighter than st under Wayland)
+#   - Used for spawning terminal sessions from GUI launcher
+#   - Falls back to st if under X11
+
+# ─────────────────────────────────────────────────────────────
+# Optional: Sway (full Wayland WM, heavier ~15MB)
+# ─────────────────────────────────────────────────────────────
+# sway is NOT installed by default (too much RAM for kiosk use)
+# If multi-window Wayland is needed:
+#   apt install sway
+# See configs/sway/config for ZERO-DAY OS keybindings
+```
+
 ### Stage 5 — Zero-Touch Setup (Custom)
 
 #### 05-stage/00-first-boot
@@ -912,6 +1084,7 @@ OFFENSIVE_PROCS="$OFFENSIVE_PROCS netcat ncat socat chisel rtl tcpdump"
 OFFENSIVE_PROCS="$OFFENSIVE_PROCS python perl ruby ir-replay ir-brute"
 OFFENSIVE_PROCS="$OFFENSIVE_PROCS john hydra gobuster responder arpspoof dnsspoof"
 OFFENSIVE_PROCS="$OFFENSIVE_PROCS ffplay wifi-survey-log doh-proxy mac-rotate quick-c2 tunnel-mgr"
+OFFENSIVE_PROCS="$OFFENSIVE_PROCS mpv yt-dlp retroarch chocolate-doom doom retro-play yt"
 
 for proc in $OFFENSIVE_PROCS; do
     pkill -9 "$proc" 2>/dev/null
@@ -1544,22 +1717,233 @@ Both send the same serial commands to the M5MonsterC5 board. Choose based on wor
 
 | Resource | Cardputer Zero | Ragnar requirement |
 |---|---|---|
-| RAM | 512MB (382MB free) | 2–8GB |
-| Python stack | Minimal | ML libs, Scikit-learn, etc. |
-| Web dashboard | No browser | Flask/Dash UI |
-| Nuclei + ZAP | No Go runtime | Required for full scans |
+| RAM | 512MB (382MB free) | 2–8GB (full) |
+| Python stack | Lightweight core only | ML libs, Scikit-learn, etc. |
+| Web dashboard | External browser | Flask/SocketIO UI |
+| Nuclei + ZAP | Not installed | Required for full scans |
 
-For the complete Ragnar experience, run it on a separate machine (8GB+ RAM) and use ZERO-DAY OS as the hands-on attack tool. Feed ragnar-scan output to Ragnar for AI-powered analysis.
+**Solution: Vendored Ragnar Port** — We now run Ragnar in headless mode as a separate service on port 8091, with only the lightweight Python core (Flask, python-nmap, paramiko, SQLAlchemy). The full ML/AI stack and e-paper display are disabled. A `ragnar-ctl` wrapper script provides on-device control:
+
+```bash
+ragnar-ctl start          # Start headless Ragnar on port 8091
+ragnar-ctl stop           # Stop Ragnar
+ragnar-ctl status         # Show status + dashboard URL
+ragnar-ctl url            # Print dashboard URL
+ragnar-ctl scan           # Trigger network scan
+ragnar-ctl vuln [target]  # Trigger vulnerability scan
+ragnar-ctl auto           # Enable automation (orchestrator)
+ragnar-ctl manual         # Disable automation (manual mode)
+ragnar-ctl logs [n]       # Show recent logs
+ragnar-ctl install        # Clone + install Ragnar from GitHub
+ragnar-ctl update         # Update Ragnar (git pull)
+```
+
+**Memory budget for Ragnar headless:**
+- Python3 + Flask: ~40MB
+- nmap scanning: ~25MB
+- Total Ragnar headless: ~80MB (fits alongside cyber_launcher on 512MB device)
+- Full Ragnar (with AI, e-paper, advanced vuln): requires separate 8GB+ machine
 
 ---
 
-## 9. Flipper TUI — Technical Design
+## 8i. YouTube Player
+
+The `yt` command provides YouTube search, streaming, and download on the Cardputer Zero. It uses `yt-dlp` for search/download and `mpv` (Wayland) or `ffplay` (fallback) for playback.
+
+### Architecture
+
+```
+                         Cardputer Zero
+┌──────────────────────────────────────────┐
+│                                          │
+│  yt search <query>                      │
+│    └── yt-dlp --flat-playlist → list    │
+│        └── Interactive selection         │
+│            └── mpv -ytdl-format=worst   │
+│                └── Stream to display     │
+│                                          │
+│  yt audio <url>                          │
+│    └── mpv --no-video (LCD mode)        │
+│    └── mpv --fullscreen (HDMI mode)      │
+│                                          │
+│  yt download <url>                       │
+│    └── yt-dlp -f worst → /loot/yt/      │
+│                                          │
+│  yt download-audio <url>                 │
+│    └── yt-dlp --extract-audio → /music/  │
+│                                          │
+│  ZERODAY_DISPLAY=hdmi                    │
+│    └── Enables fullscreen video output    │
+│                                          │
+│  Default (LCD 320x170):                  │
+│    └── Audio-only or low-res video       │
+│    └── mpv --no-video (saves battery)    │
+│                                          │
+└──────────────────────────────────────────┘
+```
+
+### Display Modes
+
+| Mode | Setting | Playback | RAM |
+|---|---|---|---|
+| **LCD (default)** | `ZERODAY_DISPLAY=` (unset) | Audio-only via mpv `--no-video` | ~15MB |
+| **HDMI** | `export ZERODAY_DISPLAY=hdmi` | Fullscreen video via mpv | ~30MB |
+
+### Playback Quality
+
+- **LCD**: `worstaudio` format (audio-only, ~64kbps Opus) — battery-friendly
+- **HDMI**: `worst[height<=480]` (240-480p video) — watchable on external display
+- Hardware video decode via BCM2837's H.264 codec (1080p30 capable)
+
+---
+
+## 8j. DOOM
+
+DOOM runs natively on the Cardputer Zero via `chocolate-doom`, a faithful source port of the original DOOM engine. The 320x170 LCD is nearly a perfect match for DOOM's native 320x200 resolution.
+
+### WAD Management
+
+| WAD | Type | Path | Notes |
+|---|---|---|---|
+| `freedoom1.wad` | Free | `/opt/cardputer/doom/wads/` | Pre-installed, Phase 1 |
+| `freedoom2.wad` | Free | `/opt/cardputer/doom/wads/` | Pre-installed, Phase 2 |
+| `doom1.wad` | Shareware | `/opt/cardputer/doom/wads/` | Download via `doom-play shareware` |
+| `doom.wad` | Commercial | `/opt/cardputer/doom/wads/` | User-supplied |
+| `doom2.wad` | Commercial | `/opt/cardputer/doom/wads/` | User-supplied |
+
+### Keyboard Mapping
+
+```
+ ┌─────────────────────────────────────┐
+ │  W/A/S/D       = Move / Strafe      │
+ │  Arrows         = Move / Strafe      │
+ │  Space          = Use / Open doors    │
+ │  Ctrl / LShift  = Fire weapon        │
+ │  Tab            = Automap             │
+ │  1-7            = Select weapon       │
+ │  Esc            = Menu / Quit         │
+ │  F1             = Help                │
+ └─────────────────────────────────────┘
+```
+
+### Memory Usage
+
+chocolate-doom uses approximately **8-15MB RAM** depending on WAD size, leaving plenty of headroom on the 512MB device.
+
+---
+
+## 8k. Retro Gaming (RetroArch)
+
+The `retro-play` command provides a unified interface for retro game emulation on the Cardputer Zero. It leverages RetroArch with lightweight libretro cores optimized for ARM64.
+
+### Supported Systems
+
+| System | Core | RAM (idle) | ROM Dir | Extensions |
+|---|---|---|---|---|
+| NES | FCEUmm | ~8MB | `roms/nes/` | .nes .fds .unf |
+| SNES | Snes9x | ~15MB | `roms/snes/` | .smc .sfc .swc .fig |
+| Game Boy | Gambatte | ~5MB | `roms/gb/` | .gb .dmg |
+| GBC | Gambatte | ~5MB | `roms/gbc/` | .gbc |
+| GBA | mGBA | ~20MB | `roms/gba/` | .gba |
+| SMS | Genesis Plus GX | ~12MB | `roms/sms/` | .sms |
+| Genesis | Genesis Plus GX | ~15MB | `roms/genesis/` | .gen .md .smd .bin |
+| Atari 2600 | Stella | ~5MB | `roms/atari2600/` | .a26 .bin |
+| PC Engine | Mednafen PCE | ~10MB | `roms/pcengine/` | .pce .tg16 .cue |
+| Lynx | Mednafen Lynx | ~8MB | `roms/lynx/` | .lnx |
+
+### Controls (46-key keyboard)
+
+```
+ ┌─────────────────────────────────────┐
+ │  Arrows         = D-Pad             │
+ │  Z / J          = Button A          │
+ │  X / K          = Button B          │
+ │  Space / Enter  = Start             │
+ │  Tab            = Select             │
+ │  F1             = RetroArch menu     │
+ │  F2             = Save state         │
+ │  F4             = Load state        │
+ │  F5/F6          = State slot -/+    │
+ │  Esc             = Quit              │
+ └─────────────────────────────────────┘
+```
+
+### RetroArch Configuration
+
+Optimized for the 320x170 LCD:
+- RGUI menu driver (lightweight, no desktop dependencies)
+- `video_driver = gl` with OpenGL ES 2.0 rendering
+- `audio_driver = alsa` (direct ALSA, no PulseAudio overhead)
+- Save states in `/opt/cardputer/retro/saves/`
+- `audio_latency = 64` (low-latency audio)
+- `fastforward_ratio = 4.0` (4x speed for fast-forward)
+
+---
+
+## 9. Display System — Wayland GUI Primary
+
+ZERO-DAY OS uses a two-tier display system with automatic fallback:
+
+### Tier 1: Wayland Kiosk (Primary)
+
+```
+Boot → systemd → zeroday-boot.service → cage (Wayland kiosk)
+                                          │
+                                          ▼
+                                    cyber_launcher
+                                    (Pygame/SDL2)
+                                          │
+                                          ▼
+                                    ST7789v3 LCD (DRM/KMS)
+```
+
+**cage** is a kiosk Wayland compositor that runs exactly one client fullscreen. It's ideal for the Cardputer Zero because:
+
+| Feature | cage (Primary) | Xorg+i3 (Fallback) |
+|---|---|---|
+| RAM | ~3 MB | ~28 MB (Xorg 20 + i3 5 + st 3) |
+| Boot time | ~1s | ~3s |
+| Dependencies | wayland, libwayland | xserver-xorg-core, i3, st |
+| Display output | DRM/KMS direct | fbdev driver |
+| Multi-window | No (kiosk) | Yes (tiling) |
+| Terminal | foot (Wayland) | st (X11) |
+
+### Tier 2: Xorg+i3 TUI (Fallback)
+
+If cage fails to start (no Wayland support, DRM issues), `zeroday-tui.service` automatically takes over with Xorg + i3 + st. This provides the same cyber_launcher but rendered via X11.
+
+### Display Mode Selection
+
+```bash
+# Default: LCD (320x170) — audio only for YouTube, scaled for games
+# No configuration needed — auto-detected
+
+# HDMI output: fullscreen video/gaming
+export ZERODAY_DISPLAY=hdmi
+
+# This is checked by:
+#   - yt (YouTube player) — enables video playback
+#   - doom-play — enables fullscreen DOOM
+#   - retro-play — enables fullscreen RetroArch
+#   - mpv/ffplay — selects output resolution
+```
+
+### Boot Service Architecture
+
+```
+zeroday-boot.service
+    ├── zeroday-gui.service (cage → Wayland → cyber_launcher)
+    │       └── OnFailure → zeroday-tui.service (Xorg + i3 + st)
+    └── If cage not installed → zeroday-tui.service (Xorg + i3 + st)
+```
+
+### GUI Launcher Design
 
 ```
 Language:    Python 3
-Framework:   Pygame (SDL2 backend, no X11 dependency at runtime)
-Renderer:    SDL2 → DRM/KMS or X11 backend
-Screen Size: 320x170 (1.9" ST7789v3)
+Framework:   Pygame (SDL2 backend)
+Renderer:    SDL2 → Wayland (DRM/KMS) primary, X11 fallback
+Screen Size: 320x170 (1.9" ST7789v3) or 1920x1080 (HDMI)
 
 File: /usr/local/bin/cyber_launcher
 ```
@@ -1580,21 +1964,24 @@ import shlex
 import select
 
 class CyberLauncher:
-    """Main Flipper-style Pygame GUI launcher"""
+    """Main GUI launcher — big icons for small screen"""
     
     # Screen: 320x170, 30 FPS target
     # States: SPLASH → HOME → LIST → ACTION | PROMPT | WALKIE_TALKIE | MEDIA_PLAYER
     
-    CATEGORIES = [  # 12 categories, 4x3 grid
+    CATEGORIES = [  # 16 categories, 4×4 grid with big icons
         "WIFI", "M5MONSTER", "NET", "BT",
         "IR", "CAM", "PAYLD", "RADIO",
-        "MEDIA", "SHELL", "SYS", "OPEN"
+        "MEDIA", "YT", "GAMES", "RETRO",
+        "SHELL", "SYS", "OPENCODE", "OPEN"
     ]
     
-    # 12 categories fill a 4×3 grid perfectly
+    # 16 categories fill a 4×4 grid with large icons
     # Navigation: Arrow keys, Enter, Esc, Tab (in PROMPT mode)
     # Walkie-Talkie: Space = PTT, UDP broadcast on port 42420
     # Media Player: Left/Right = change station, Esc = stop
+    # YouTube: ytdl-based search/stream, audio-only on LCD
+    # Games: DOOM + RetroArch launcher
 ```
 
 ### Rendering System
@@ -1609,16 +1996,21 @@ TEXT_PRIMARY    = (43, 204, 255)     # Kali Cyan
 TEXT_WHITE      = (240, 250, 255)    # Near-white
 CMD_FLAG        = (255, 75, 75)      # Kali Red
 
-# Category colors — each of 12 categories has a unique color
+# Category colors — each of 16 categories has a unique color
 # WIFI=Cyan, M5MONSTER=Red, NET=Blue, BT=SoftBlue,
 # IR=Orange, CAM=Pink, PAYLD=Gold, RADIO=Purple,
-# MEDIA=Green, SHELL=Red, SYS=Grey, OPEN=Cyan
+# MEDIA=Green, YT=YouTubeRed, GAMES=GamingPurple, RETRO=RetroOrange,
+# SHELL=Red, SYS=Grey, OPENCODE=Yellow, OPEN=Cyan
+
+# Icons: Full-color PNG images (64x64 minimum, scaled to grid)
+# Each category has a dedicated icon file in assets/icons/
+# Grid cells are sized for finger-sized targets despite small screen
 
 # Fonts: Terminus (monospace, bitmap) preferred, fallback to system monospace
 # All drawing via pygame.draw.rect(), pygame.draw.line(), pygame.font.SysFont()
 
 # Screens: 320x170 at 30 FPS
-# HOME:     4×3 grid of categories (80px cells)
+# HOME:     4×4 grid of categories with big icons (80px cells)
 # LIST:     Scrollable tool list with colored sidebar
 # ACTION:   Confirmation dialog for command execution
 # PROMPT:   Multi-field argument input with validation
