@@ -1,0 +1,172 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/john
+# John the Ripper password cracker wrapper
+# Usage: john <mode> [options]
+# Modes: hash, wordlist, rules, single, show, benchmark, help
+
+LOOT="/opt/cardputer/loot/creds"
+WORDLISTS="/usr/share/wordlists"
+mkdir -p "$LOOT"
+
+check_john() {
+    if ! command -v john &>/dev/null; then
+        echo "[!] John the Ripper not found. Install: apt install john"
+        exit 1
+    fi
+}
+
+case "${1:-help}" in
+    hash|--hash|-h2)
+        check_john
+        HASHFILE="${2:-}"
+
+        if [ -z "$HASHFILE" ] || [ ! -f "$HASHFILE" ]; then
+            echo "Usage: john hash <hash_file>"
+            echo ""
+            echo "Auto-detect hash format and crack with default wordlist."
+            echo ""
+            echo "Supported hash files: /etc/shadow, passwd, NetNTLM, etc."
+            echo "Example: john hash /opt/cardputer/loot/creds/hashes.txt"
+            exit 1
+        fi
+
+        WORDLIST="${3:-$WORDLISTS/rockyou.txt}"
+
+        echo "[*] John the Ripper — Auto-detect Hash Cracking"
+        echo "[*] Hash file: $HASHFILE"
+        echo "[*] Wordlist: $WORDLIST"
+        echo ""
+
+        john --wordlist="$WORDLIST" "$HASHFILE" 2>&1 || true
+        echo ""
+        echo "[+] Cracked passwords:"
+        john --show "$HASHFILE" 2>&1 || true
+        ;;
+
+    wordlist|--wordlist|-w)
+        check_john
+        HASHFILE="${2:-}"
+        WORDLIST="${3:-$WORDLISTS/rockyou.txt}"
+
+        if [ -z "$HASHFILE" ] || [ ! -f "$HASHFILE" ]; then
+            echo "Usage: john wordlist <hash_file> [wordlist]"
+            echo ""
+            echo "Crack with specific wordlist."
+            echo "Default wordlist: $WORDLISTS/rockyou.txt"
+            exit 1
+        fi
+
+        echo "[*] John the Ripper — Wordlist Attack"
+        echo "[*] Hash file: $HASHFILE"
+        echo "[*] Wordlist: $WORDLIST"
+        echo ""
+
+        john --wordlist="$WORDLIST" "$HASHFILE" 2>&1 || true
+        echo ""
+        echo "[+] Results:"
+        john --show "$HASHFILE" 2>&1 || true
+        ;;
+
+    rules|--rules|-r)
+        check_john
+        HASHFILE="${2:-}"
+        WORDLIST="${3:-$WORDLISTS/rockyou.txt}"
+        RULESET="${4:-All}"
+
+        if [ -z "$HASHFILE" ] || [ ! -f "$HASHFILE" ]; then
+            echo "Usage: john rules <hash_file> [wordlist] [ruleset]"
+            echo ""
+            echo "Crack with wordlist + mangling rules."
+            echo "Rulesets: All, Single, Extra, KoreLogic, JackTheRipper"
+            exit 1
+        fi
+
+        echo "[*] John the Ripper — Wordlist + Rules"
+        echo "[*] Hash file: $HASHFILE"
+        echo "[*] Wordlist: $WORDLIST"
+        echo "[*] Rules: $RULESET"
+        echo ""
+
+        john --wordlist="$WORDLIST" --rules="$RULESET" "$HASHFILE" 2>&1 || true
+        echo ""
+        echo "[+] Results:"
+        john --show "$HASHFILE" 2>&1 || true
+        ;;
+
+    single|--single|-s)
+        check_john
+        HASHFILE="${2:-}"
+
+        if [ -z "$HASHFILE" ] || [ ! -f "$HASHFILE" ]; then
+            echo "Usage: john single <hash_file>"
+            echo ""
+            echo "Single crack mode (uses username info)."
+            exit 1
+        fi
+
+        echo "[*] John the Ripper — Single Crack Mode"
+        echo "[*] Hash file: $HASHFILE"
+        echo ""
+
+        john --single "$HASHFILE" 2>&1 || true
+        echo ""
+        echo "[+] Results:"
+        john --show "$HASHFILE" 2>&1 || true
+        ;;
+
+    show|--show|-sh)
+        check_john
+        HASHFILE="${2:-}"
+
+        if [ -z "$HASHFILE" ]; then
+            echo "Usage: john show <hash_file>"
+            echo ""
+            echo "Show cracked passwords for hash file."
+            exit 1
+        fi
+
+        john --show "$HASHFILE" 2>&1 || true
+        ;;
+
+    benchmark|--benchmark|-b)
+        check_john
+        echo "[*] John the Ripper Benchmark"
+        echo ""
+        john --benchmark 2>&1
+        ;;
+
+    help|--help|-h)
+        echo "Usage: john <mode> [options]"
+        echo ""
+        echo "John the Ripper Password Cracker Wrapper"
+        echo ""
+        echo "Modes:"
+        echo "  hash <file> [wordlist]       Auto-detect and crack hashes"
+        echo "  wordlist <file> [wordlist]   Wordlist attack"
+        echo "  rules <file> [wl] [rules]    Wordlist + rules attack"
+        echo "  single <file>                Single crack mode"
+        echo "  show <file>                  Show cracked passwords"
+        echo "  benchmark                    Run performance benchmark"
+        echo ""
+        echo "Wordlists:"
+        echo "  /usr/share/wordlists/rockyou.txt     — Default"
+        echo "  /usr/share/wordlists/dirb/common.txt — Small"
+        echo ""
+        echo "Examples:"
+        echo "  john hash /etc/shadow"
+        echo "  john wordlist hashes.txt /usr/share/wordlists/rockyou.txt"
+        echo "  john rules hashes.txt rockyou.txt All"
+        echo "  john single hashes.txt"
+        echo "  john show hashes.txt"
+        echo ""
+        echo "Requirement: john (apt install john)"
+        exit 0
+        ;;
+
+    *)
+        echo "[!] Unknown mode: $1"
+        echo "Run: john help"
+        exit 1
+        ;;
+esac

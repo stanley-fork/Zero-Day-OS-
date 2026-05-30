@@ -145,6 +145,80 @@ case "${1:-help}" in
         echo "[+] PID: $SSH_PID"
         ;;
 
+    icmp|--icmp|-i)
+        # ICMP tunnel for covert C2 using ICMP echo packets
+        REMOTE="${2:-}"
+
+        if [ -z "$REMOTE" ]; then
+            echo "Usage: tunnel-mgr icmp <remote_host>"
+            echo ""
+            echo "ICMP tunnel for covert C2 channel via ICMP echo packets."
+            echo "Requires: ptunnel or icmptx"
+            echo ""
+            echo "Example: tunnel-mgr icmp 10.0.0.1"
+            exit 1
+        fi
+        validate_host "$REMOTE"
+
+        TUNNEL_ID="icmp_${REMOTE}"
+        PID_FILE="$PID_DIR/${TUNNEL_ID}.pid"
+
+        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+            echo "[!] ICMP tunnel to $REMOTE already running (PID: $(cat "$PID_FILE"))"
+            echo "    Stop: tunnel-mgr kill $TUNNEL_ID"
+            exit 0
+        fi
+
+        echo "[*] Starting ICMP tunnel..."
+        echo "[*] Remote host: $REMOTE"
+
+        # Try ptunnel first (more reliable), fall back to icmptx
+        if command -v ptunnel &>/dev/null; then
+            echo "[*] Using ptunnel (ICMP echo tunnel)"
+            LOCAL_PORT="${3:-4444}"
+            echo "[*] Local proxy port: $LOCAL_PORT"
+            echo "[*] Traffic flows: localhost:$LOCAL_PORT -> ICMP -> $REMOTE -> destination"
+            echo ""
+            ptunnel -x "$REMOTE" -daemon /var/run/ptunnel.pid 2>/dev/null || \
+            ptunnel "$REMOTE" &
+            PTUNNEL_PID=$!
+            echo "$PTUNNEL_PID" > "$PID_FILE"
+            echo "[+] ICMP tunnel active"
+            echo "[+] PID: $PTUNNEL_PID"
+            echo "[+] Connect via proxy: ssh -o ProxyCommand='nc 127.0.0.1 $LOCAL_PORT' user@target"
+            echo "[+] Stop: tunnel-mgr kill $TUNNEL_ID"
+        elif command -v icmptx &>/dev/null; then
+            echo "[*] Using icmptx (ICMP echo tunnel)"
+            icmptx "$REMOTE" &
+            ICMPTX_PID=$!
+            echo "$ICMPTX_PID" > "$PID_FILE"
+            echo "[+] ICMP tunnel active"
+            echo "[+] PID: $ICMPTX_PID"
+            echo "[+] Stop: tunnel-mgr kill $TUNNEL_ID"
+        else
+            echo "[!] No ICMP tunnel tool found."
+            echo "[*] Install ptunnel: apt install ptunnel"
+            echo "[*] Or install icmptx: apt install icmptx"
+            echo "[*] Falling back to manual ICMP shell via /bin/bash +.ping..."
+            echo ""
+            echo "[*] Starting simple ICMP echo responder..."
+            echo "[*] This provides basic ICMP echo connectivity to $REMOTE"
+            echo "[*] For proper C2, install ptunnel or icmptx"
+            # Simple ping-based tunnel — sends keepalive ICMP echoes
+            (
+                while true; do
+                    ping -c 1 -W 5 "$REMOTE" 2>/dev/null
+                    sleep 1
+                done
+            ) &
+            PING_PID=$!
+            echo "$PING_PID" > "$PID_FILE"
+            echo "[+] ICMP keepalive active (PID: $PING_PID)"
+            echo "[+] For full covert C2, install ptunnel"
+            echo "[+] Stop: tunnel-mgr kill $TUNNEL_ID"
+        fi
+        ;;
+
     list|--list|-l)
         echo "[*] Active Tunnels:"
         echo ""
@@ -213,6 +287,7 @@ case "${1:-help}" in
         echo "  socks <host> [port] [user] [auto]  SOCKS5 proxy via SSH"
         echo "  forward <lport> <rhost:rport> <ssh> Local port forward"
         echo "  reverse <rport> <lport> <ssh_host>  Remote port forward"
+        echo "  icmp <remote_host>               ICMP tunnel (covert C2)"
         echo "  list                                List active tunnels"
         echo "  kill <tunnel_id>                    Kill a specific tunnel"
         echo "  killall                             Kill all tunnels"

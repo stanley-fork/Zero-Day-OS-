@@ -138,6 +138,8 @@ phase_boot_sequence() {
         "${G}[  OK  ]${NC}  USB: Gadget mode available (usb-gadget-mode)"
         "${G}[  OK  ]${NC}  Tamper: BMI270 motion daemon started"
         "${G}[  OK  ]${NC}  Loot: /opt/cardputer/loot ready"
+        "${G}[  OK  ]${NC}  GUI: Wayland cage compositor loaded"
+        "${Y}[ .... ]${NC}  Games: DOOM + RetroArch on standby"
     )
 
     echo ""
@@ -180,9 +182,12 @@ phase_ready() {
     echo ""
     center "${B}${G}▸ Z E R O - D A Y   O S   R E A D Y${NC}"
     echo ""
-    center "${D}Fn+Tab: TUI  │  Fn+P: Panic  │  Fn+O: OpenCode${NC}"
+    center "${D}Fn+Tab: GUI  │  Fn+P: Panic  │  Fn+O: OpenCode${NC}"
+    echo ""
+    center "${D}Fn+G: DOOM  │  Fn+R: Retro  │  Fn+Y: YouTube${NC}"
     echo ""
     center "${D}All radios OFF — use wifi-toggle / bt-toggle to enable${NC}"
+    center "${D}GUI mode (Wayland) — TUI fallback available${NC}"
     echo ""
 
     # Blinking cursor

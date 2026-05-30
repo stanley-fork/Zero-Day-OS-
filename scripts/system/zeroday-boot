@@ -37,7 +37,7 @@ echo "[zeroday-boot] Syncing hardware clock..."
 hwclock --hctosys 2>/dev/null || true
 
 echo "[zeroday-boot] Creating loot directories..."
-mkdir -p /opt/cardputer/{handshakes,pmkid,payloads,workspace,loot/{recon,bt,ble,ir,cam,rf,screenshot},config/{attack-profiles,wordlists,ir_codes,opencode}}
+mkdir -p /opt/cardputer/{handshakes,pmkid,payloads,workspace,loot/{recon,bt,ble,ir,cam,rf,screenshot,yt},config/{attack-profiles,wordlists,ir_codes,opencode},doom/wads,retro/{roms/{nes,snes,gb,gbc,gba,sms,genesis,atari2600,pcengine,lynx},saves,cores,system},music}
 
 echo "[zeroday-boot] Setting permissions..."
 chmod 700 /opt/cardputer
@@ -51,10 +51,20 @@ if [ -f /etc/systemd/system/getty@tty1.service.d/autologin.conf ]; then
     systemctl start getty@tty1.service 2>/dev/null
 fi
 
-echo "[zeroday-boot] Launching Xorg + i3..."
-if [ -f /etc/X11/xorg.conf ]; then
-    su - root -c "startx &" 2>/dev/null &
+echo "[zeroday-boot] Launching display compositor..."
+# Priority: zeroday-comp (custom Wayland) → cage (kiosk Wayland) → Xorg+i3 (TUI)
+if command -v zeroday-comp >/dev/null 2>&1; then
+    echo "[zeroday-boot] zeroday-comp (custom Wayland) found — starting compositor"
+    systemctl start zeroday-comp.service 2>/dev/null &
+elif command -v cage >/dev/null 2>&1; then
+    echo "[zeroday-boot] cage (Wayland kiosk) found — starting GUI launcher"
+    systemctl start zeroday-gui.service 2>/dev/null &
+else
+    echo "[zeroday-boot] No Wayland compositor found — starting Xorg+i3 TUI mode"
+    if [ -f /etc/X11/xorg.conf ]; then
+        su - root -c "startx &" 2>/dev/null &
+    fi
 fi
 
 echo "[zeroday-boot] ZERO-DAY OS ready."
-echo "[zeroday-boot] Fn+Tab: TUI  |  Fn+P: Panic  |  Fn+O: OpenCode"
+echo "[zeroday-boot] Fn+Tab: Launcher  |  Fn+P: Panic  |  Fn+O: OpenCode"

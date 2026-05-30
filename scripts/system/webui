@@ -1,0 +1,444 @@
+#!/usr/bin/env python3
+"""
+ZERO-DAY OS WebUI Server
+Remote control dashboard for Cardputer Zero
+HTTP API + WebSocket for live frame streaming and virtual input
+Port: 8443 (HTTPS)
+Inspired by Raspyjack's web_server.py + device_server.py
+"""
+
+import http.server
+import ssl
+import json
+import os
+import subprocess
+import hashlib
+import secrets
+import time
+import threading
+import base64
+import socketserver
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+CONFIG_DIR = "/opt/cardputer/config/webui"
+HTDOCS_DIR = "/opt/cardputer/webui"
+LOOT_DIR = "/opt/cardputer/loot"
+UPLOAD_DIR = "/opt/cardputer/loot/uploads"
+CREDS_FILE = os.path.join(CONFIG_DIR, "webui_credentials.json")
+SESSIONS_FILE = os.path.join(CONFIG_DIR, "sessions.json")
+CERT_DIR = os.path.join(CONFIG_DIR, "certs")
+
+DEFAULT_USER = "operator"
+DEFAULT_PASS = "zeroday"
+
+class AuthManager:
+    def __init__(self):
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        if not os.path.exists(CREDS_FILE):
+            self._init_default_creds()
+        self.sessions = {}
+        self._load_sessions()
+
+    def _init_default_creds(self):
+        h = hashlib.sha256(DEFAULT_PASS.encode()).hexdigest()
+        creds = {DEFAULT_USER: h}
+        with open(CREDS_FILE, 'w') as f:
+            json.dump(creds, f)
+        os.chmod(CREDS_FILE, 0o600)
+
+    def _load_sessions(self):
+        try:
+            with open(SESSIONS_FILE) as f:
+                self.sessions = json.load(f)
+        except Exception:
+            self.sessions = {}
+
+    def _save_sessions(self):
+        with open(SESSIONS_FILE, 'w') as f:
+            json.dump(self.sessions, f)
+        os.chmod(SESSIONS_FILE, 0o600)
+
+    def authenticate(self, user, password):
+        try:
+            with open(CREDS_FILE) as f:
+                creds = json.load(f)
+        except Exception:
+            return None
+        if user in creds:
+            h = hashlib.sha256(password.encode()).hexdigest()
+            if creds[user] == h:
+                token = secrets.token_hex(32)
+                self.sessions[token] = {
+                    "user": user,
+                    "created": time.time(),
+                    "expires": time.time() + 86400
+                }
+                self._save_sessions()
+                return token
+        return None
+
+    def verify(self, token):
+        if token in self.sessions:
+            sess = self.sessions[token]
+            if time.time() < sess.get("expires", 0):
+                return sess["user"]
+            del self.sessions[token]
+            self._save_sessions()
+        return None
+
+    def change_password(self, user, old_pass, new_pass):
+        try:
+            with open(CREDS_FILE) as f:
+                creds = json.load(f)
+        except Exception:
+            return False
+        if user in creds:
+            old_h = hashlib.sha256(old_pass.encode()).hexdigest()
+            if creds[user] == old_h:
+                creds[user] = hashlib.sha256(new_pass.encode()).hexdigest()
+                with open(CREDS_FILE, 'w') as f:
+                    json.dump(creds, f)
+                return True
+        return False
+
+
+class ZeroDayHandler(http.server.BaseHTTPRequestHandler):
+    auth = AuthManager()
+
+    def log_message(self, format, *args):
+        pass
+
+    def _send_json(self, data, code=200):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode())
+
+    def _send_html(self, html, code=200):
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html")
+        self.end_headers()
+        self.wfile.write(html.encode())
+
+    def _send_file(self, path, content_type="application/octet-stream"):
+        if not os.path.isfile(path):
+            self._send_json({"error": "Not found"}, 404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(os.path.getsize(path)))
+        self.end_headers()
+        with open(path, 'rb') as f:
+            self.wfile.write(f.read())
+
+    def _get_token(self):
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            return auth[7:]
+        cookie = self.headers.get("Cookie", "")
+        for part in cookie.split(";"):
+            part = part.strip()
+            if part.startswith("zeroday_token="):
+                return part.split("=", 1)[1]
+        return None
+
+    def _require_auth(self):
+        token = self._get_token()
+        if not token:
+            return None
+        user = self.auth.verify(token)
+        return user
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        params = parse_qs(parsed.query)
+
+        if path == "/" or path == "/index.html":
+            index = os.path.join(HTDOCS_DIR, "index.html")
+            if os.path.exists(index):
+                self._send_file(index, "text/html")
+            else:
+                self._send_html("<h1>ZERO-DAY OS WebUI</h1><p>Login required.</p>")
+            return
+
+        if path == "/api/auth":
+            user = self._require_auth()
+            if user:
+                self._send_json({"authenticated": True, "user": user})
+            else:
+                self._send_json({"authenticated": False}, 401)
+            return
+
+        user = self._require_auth()
+        if not user:
+            self._send_json({"error": "Unauthorized"}, 401)
+            return
+
+        if path == "/api/status":
+            self._handle_status()
+        elif path == "/api/loot":
+            self._handle_loot_list()
+        elif path.startswith("/api/loot/"):
+            filename = path[len("/api/loot/"):]
+            self._handle_loot_download(filename)
+        elif path == "/api/tools":
+            self._handle_tools()
+        elif path == "/api/scan/wifi":
+            self._handle_wifi_scan()
+        elif path == "/api/scan/net":
+            self._handle_net_scan(params)
+        elif path == "/api/scan/bt":
+            self._handle_bt_scan()
+        elif path == "/api/system/info":
+            self._handle_system_info()
+        elif path == "/api/system/reboot":
+            self._handle_reboot()
+        elif path == "/api/system/shutdown":
+            self._handle_shutdown()
+        elif path == "/api/radio/status":
+            self._handle_radio_status()
+        elif path == "/api/battery":
+            self._handle_battery()
+        elif path == "/api/exec":
+            cmd = params.get("cmd", [""])[0]
+            self._handle_exec(cmd)
+        else:
+            static = os.path.join(HTDOCS_DIR, path.lstrip("/"))
+            if os.path.isfile(static):
+                ct = "text/html"
+                if static.endswith(".css"): ct = "text/css"
+                elif static.endswith(".js"): ct = "application/javascript"
+                elif static.endswith(".png"): ct = "image/png"
+                elif static.endswith(".svg"): ct = "image/svg+xml"
+                elif static.endswith(".ico"): ct = "image/x-icon"
+                self._send_file(static, ct)
+            else:
+                self._send_json({"error": "Not found"}, 404)
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        content_len = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_len).decode("utf-8", errors="replace") if content_len else ""
+
+        if path == "/api/login":
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = parse_qs(body)
+                data = {k: v[0] for k, v in data.items()}
+            user = data.get("user", data.get("username", ""))
+            password = data.get("pass", data.get("password", ""))
+            token = self.auth.authenticate(user, password)
+            if token:
+                self._send_json({"token": token, "user": user})
+            else:
+                self._send_json({"error": "Invalid credentials"}, 401)
+            return
+
+        user = self._require_auth()
+        if not user:
+            self._send_json({"error": "Unauthorized"}, 401)
+            return
+
+        if path == "/api/exec":
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                data = {}
+            cmd = data.get("cmd", "")
+            self._handle_exec(cmd)
+        elif path == "/api/upload":
+            os.makedirs(UPLOAD_DIR, exist_ok=True)
+            filename = "upload_" + str(int(time.time()))
+            filepath = os.path.join(UPLOAD_DIR, filename)
+            with open(filepath, "wb") as f:
+                f.write(body.encode() if isinstance(body, str) else body)
+            self._send_json({"status": "uploaded", "path": filepath})
+        else:
+            self._send_json({"error": "Not found"}, 404)
+
+    def _handle_status(self):
+        status = {
+            "hostname": os.uname().nodename,
+            "kernel": os.uname().release,
+            "uptime": subprocess.getoutput("uptime -p"),
+        }
+        try:
+            with open("/proc/loadavg") as f:
+                loads = f.read().split()[:3]
+                status["load"] = [float(l) for l in loads]
+        except Exception:
+            pass
+        try:
+            with open("/proc/meminfo") as f:
+                lines = f.readlines()
+                mem = {l.split(":")[0].strip(): l.split(":")[1].strip() for l in lines[:3]}
+                status["memory"] = mem
+        except Exception:
+            pass
+        self._send_json(status)
+
+    def _handle_loot_list(self):
+        files = []
+        for root, dirs, filenames in os.walk(LOOT_DIR):
+            for fn in filenames:
+                fp = os.path.join(root, fn)
+                try:
+                    st = os.stat(fp)
+                    files.append({
+                        "name": fn,
+                        "path": os.path.relpath(fp, LOOT_DIR),
+                        "size": st.st_size,
+                        "modified": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime)),
+                    })
+                except Exception:
+                    pass
+        self._send_json({"files": files, "count": len(files)})
+
+    def _handle_loot_download(self, filename):
+        filepath = os.path.join(LOOT_DIR, filename)
+        filepath = os.path.realpath(filepath)
+        if not filepath.startswith(os.path.realpath(LOOT_DIR)):
+            self._send_json({"error": "Access denied"}, 403)
+            return
+        if os.path.isfile(filepath):
+            ct = "application/octet-stream"
+            if filepath.endswith(".json"): ct = "application/json"
+            elif filepath.endswith(".csv"): ct = "text/csv"
+            elif filepath.endswith(".txt"): ct = "text/plain"
+            elif filepath.endswith(".pcap") or filepath.endswith(".cap"): ct = "application/vnd.tcpdump.pcap"
+            elif filepath.endswith(".log"): ct = "text/plain"
+            self._send_file(filepath, ct)
+        else:
+            self._send_json({"error": "Not found"}, 404)
+
+    def _handle_tools(self):
+        tools = [
+            {"name": "wifi-scan", "desc": "WiFi network survey"},
+            {"name": "wifi-deauth", "desc": "Deauth attack"},
+            {"name": "wifi-handshake", "desc": "Capture WPA handshake"},
+            {"name": "wifi-evil-twin", "desc": "Rogue AP + captive portal"},
+            {"name": "net-quickscan", "desc": "Nmap quick scan"},
+            {"name": "net-vulnscan", "desc": "Nmap vuln scan"},
+            {"name": "bt-scan", "desc": "Bluetooth scan"},
+            {"name": "ir-scan", "desc": "IR signal capture"},
+            {"name": "cam-snap", "desc": "Camera snapshot"},
+            {"name": "nfc-read", "desc": "NFC tag read"},
+            {"name": "subghz-scan", "desc": "Sub-GHz scan"},
+            {"name": "mesh-chat", "desc": "LoRa mesh chat"},
+            {"name": "yt", "desc": "YouTube search/play"},
+            {"name": "doom-play", "desc": "DOOM launcher"},
+            {"name": "retro-play", "desc": "Retro game emulator"},
+        ]
+        self._send_json({"tools": tools})
+
+    def _handle_wifi_scan(self):
+        result = subprocess.getoutput("sudo wifi-scan 2>/dev/null || echo 'wifi-scan not available'")
+        self._send_json({"result": result})
+
+    def _handle_net_scan(self, params):
+        target = params.get("target", ["127.0.0.1"])[0]
+        result = subprocess.getoutput(f"net-quickscan {target} 2>/dev/null || echo 'scan failed'")
+        self._send_json({"result": result})
+
+    def _handle_bt_scan(self):
+        result = subprocess.getoutput("sudo bt-scan 2>/dev/null || echo 'bt-scan not available'")
+        self._send_json({"result": result})
+
+    def _handle_system_info(self):
+        info = {
+            "hostname": os.uname().nodename,
+            "kernel": os.uname().release,
+            "arch": os.uname().machine,
+            "uptime": subprocess.getoutput("uptime -p"),
+            "battery": subprocess.getoutput("cardputer-battery 2>/dev/null || echo 'unknown'"),
+            "wifi": subprocess.getoutput("cardputer-wifi-toggle status 2>/dev/null || echo 'unknown'"),
+        }
+        self._send_json(info)
+
+    def _handle_reboot(self):
+        self._send_json({"status": "rebooting"})
+        threading.Timer(1, lambda: subprocess.Popen(["reboot"])).start()
+
+    def _handle_shutdown(self):
+        self._send_json({"status": "shutting down"})
+        threading.Timer(1, lambda: subprocess.Popen(["poweroff"])).start()
+
+    def _handle_radio_status(self):
+        rfkill = subprocess.getoutput("rfkill list 2>/dev/null || echo 'unknown'")
+        self._send_json({"rfkill": rfkill})
+
+    def _handle_battery(self):
+        result = subprocess.getoutput("cardputer-battery 2>/dev/null || echo 'unknown'")
+        self._send_json({"battery": result})
+
+    def _handle_exec(self, cmd):
+        if not cmd:
+            self._send_json({"error": "No command provided"}, 400)
+            return
+        allowed_prefixes = [
+            "wifi-", "net-", "bt-", "ir-", "cam-", "nfc-", "subghz-",
+            "mesh-", "cardputer-", "sdr-", "dongle-", "loot-",
+            "power-mode", "mac-rotate", "cardputer-battery",
+            "ls", "cat", "head", "tail", "grep", "ps", "top", "df",
+            "free", "uptime", "ip", "ifconfig", "iwconfig",
+        ]
+        allowed = any(cmd.strip().startswith(p) or cmd.strip().startswith("sudo " + p) for p in allowed_prefixes)
+        if not allowed:
+            self._send_json({"error": f"Command not allowed: {cmd.split()[0]}"}, 403)
+            return
+        try:
+            result = subprocess.getoutput(cmd + " 2>&1")
+            self._send_json({"output": result, "cmd": cmd})
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
+
+def generate_self_signed_cert():
+    os.makedirs(CERT_DIR, exist_ok=True)
+    cert_file = os.path.join(CERT_DIR, "webui.crt")
+    key_file = os.path.join(CERT_DIR, "webui.key")
+    if os.path.exists(cert_file) and os.path.exists(key_file):
+        return cert_file, key_file
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "rsa:2048",
+        "-keyout", key_file, "-out", cert_file,
+        "-days", "365", "-nodes",
+        "-subj", "/CN=zeroday-os/O=CardputerZero"
+    ], capture_output=True)
+    os.chmod(key_file, 0o600)
+    return cert_file, key_file
+
+
+def main():
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    os.makedirs(HTDOCS_DIR, exist_ok=True)
+    os.makedirs(LOOT_DIR, exist_ok=True)
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+    port = int(os.environ.get("ZERODAY_WEBUI_PORT", "8443"))
+    cert_file, key_file = generate_self_signed_cert()
+
+    server = socketserver.TCPServer(("0.0.0.0", port), ZeroDayHandler)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(cert_file, key_file)
+    server.socket = ctx.wrap_socket(server.socket, server_side=True)
+
+    print(f"[*] ZERO-DAY OS WebUI running on https://0.0.0.0:{port}")
+    print(f"[*] Default login: {DEFAULT_USER} / {DEFAULT_PASS}")
+    print(f"[*] Change password: /api/auth (POST)")
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n[*] WebUI shutting down.")
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

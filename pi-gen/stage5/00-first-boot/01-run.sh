@@ -55,7 +55,7 @@ ssh-keygen -A 2>/dev/null || true
 
 # Write release info
 cat > /etc/zeroday-release << RELEASE
-ZERO-DAY OS v0.1-pre
+ZERO-DAY OS v4.2.2
 Build: PLACEHOLDER
 Kernel: $(uname -r)
 Hardware: M5Stack Cardputer Zero (RP3A0 SoC)

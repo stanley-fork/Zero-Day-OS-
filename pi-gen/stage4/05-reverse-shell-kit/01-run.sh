@@ -5,7 +5,7 @@ set -euo pipefail
 BIN="${ROOTFS_DIR}/usr/local/bin"
 
 # Install reverse shell scripts from the project
-for script in revshell-gen revshell-listen revshell-stabilize; do
+for script in revshell-stabilize payload-craft john hydra; do
     if [ -f "${PROJECT_ROOT}/scripts/reverse/${script}" ]; then
         cp "${PROJECT_ROOT}/scripts/reverse/${script}" "${BIN}/${script}"
         chmod +x "${BIN}/${script}"

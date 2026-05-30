@@ -1,0 +1,157 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/gobuster
+# Web directory/DNS brute-force wrapper
+# Usage: gobuster <mode> [options]
+# Modes: dir, dns, vhost, fuzz, help
+
+LOOT="/opt/cardputer/loot/creds"
+WORDLISTS="/usr/share/wordlists"
+mkdir -p "$LOOT"
+
+check_gobuster() {
+    if ! command -v gobuster &>/dev/null; then
+        echo "[!] gobuster not found. Install: apt install gobuster"
+        exit 1
+    fi
+}
+
+case "${1:-help}" in
+    dir|--dir|-d)
+        check_gobuster
+        URL="${2:-}"
+        WORDLIST="${3:-$WORDLISTS/dirb/common.txt}"
+        THREADS="${4:-20}"
+
+        if [ -z "$URL" ]; then
+            echo "Usage: gobuster dir <url> [wordlist] [threads]"
+            echo ""
+            echo "Directory/file brute-force."
+            echo ""
+            echo "Example: gobuster dir http://10.0.0.1 /usr/share/wordlists/dirb/common.txt 20"
+            echo ""
+            echo "Wordlists:"
+            echo "  dirb/common.txt     — Default (small, fast)"
+            echo "  dirbuster/directory-list-2.3-medium.txt — Medium"
+            echo "  seclists/Discovery/Web-Content/common.txt — Comprehensive"
+            exit 1
+        fi
+
+        [[ "$URL" != http* ]] && URL="http://$URL"
+
+        echo "[*] Gobuster Directory Scan"
+        echo "[*] Target: $URL"
+        echo "[*] Wordlist: $WORDLIST"
+        echo "[*] Threads: $THREADS"
+        echo ""
+
+        OUTFILE="$LOOT/gobuster_dir_$(echo "$URL" | tr ':/' '_')_$(date +%Y%m%d_%H%M%S).txt"
+        gobuster dir -u "$URL" -w "$WORDLIST" -t "$THREADS" -q --no-error -o "$OUTFILE" 2>&1 || true
+        echo ""
+        echo "[+] Results saved: $OUTFILE"
+        ;;
+
+    dns|--dns|-D)
+        check_gobuster
+        DOMAIN="${2:-}"
+        WORDLIST="${3:-$WORDLISTS/dns/subdomains-top1million-5000.txt}"
+        THREADS="${4:-20}"
+
+        if [ -z "$DOMAIN" ]; then
+            echo "Usage: gobuster dns <domain> [wordlist] [threads]"
+            echo ""
+            echo "DNS subdomain brute-force."
+            echo ""
+            echo "Example: gobuster dns example.com"
+            exit 1
+        fi
+
+        echo "[*] Gobuster DNS Enum"
+        echo "[*] Domain: $DOMAIN"
+        echo ""
+
+        OUTFILE="$LOOT/gobuster_dns_${DOMAIN}_$(date +%Y%m%d_%H%M%S).txt"
+        gobuster dns -d "$DOMAIN" -w "$WORDLIST" -t "$THREADS" -q --no-error -o "$OUTFILE" 2>&1 || true
+        echo ""
+        echo "[+] Results saved: $OUTFILE"
+        ;;
+
+    vhost|--vhost|-v)
+        check_gobuster
+        URL="${2:-}"
+        WORDLIST="${3:-$WORDLISTS/dirb/common.txt}"
+        THREADS="${4:-20}"
+
+        if [ -z "$URL" ]; then
+            echo "Usage: gobuster vhost <url> [wordlist] [threads]"
+            echo ""
+            echo "Virtual host brute-force."
+            exit 1
+        fi
+
+        [[ "$URL" != http* ]] && URL="http://$URL"
+
+        echo "[*] Gobuster VHost Enum"
+        echo "[*] Target: $URL"
+        echo ""
+
+        OUTFILE="$LOOT/gobuster_vhost_$(echo "$URL" | tr ':/' '_')_$(date +%Y%m%d_%H%M%S).txt"
+        gobuster vhost -u "$URL" -w "$WORDLIST" -t "$THREADS" -q --no-error -o "$OUTFILE" 2>&1 || true
+        echo ""
+        echo "[+] Results saved: $OUTFILE"
+        ;;
+
+    fuzz|--fuzz|-f)
+        check_gobuster
+        URL="${2:-}"
+        WORDLIST="${3:-$WORDLISTS/dirb/common.txt}"
+        THREADS="${4:-20}"
+
+        if [ -z "$URL" ]; then
+            echo "Usage: gobuster fuzz <url_with_FUZZ> [wordlist] [threads]"
+            echo ""
+            echo "Fuzz URL parameters."
+            echo ""
+            echo "Example: gobuster fuzz 'http://10.0.0.1/page.php?id=FUZZ'"
+            exit 1
+        fi
+
+        echo "[*] Gobuster Fuzzing"
+        echo "[*] URL: $URL"
+        echo ""
+
+        OUTFILE="$LOOT/gobuster_fuzz_$(date +%Y%m%d_%H%M%S).txt"
+        gobuster fuzz -u "$URL" -w "$WORDLIST" -t "$THREADS" -q --no-error -o "$OUTFILE" 2>&1 || true
+        echo ""
+        echo "[+] Results saved: $OUTFILE"
+        ;;
+
+    help|--help|-h)
+        echo "Usage: gobuster <mode> [options]"
+        echo ""
+        echo "Web Directory/DNS Brute-Force Wrapper"
+        echo ""
+        echo "Modes:"
+        echo "  dir <url> [wordlist] [threads]    Directory/file brute-force"
+        echo "  dns <domain> [wordlist] [threads]  DNS subdomain enum"
+        echo "  vhost <url> [wordlist] [threads]  Virtual host brute-force"
+        echo "  fuzz <url_FUZZ> [wordlist] [thr]   Parameter fuzzing"
+        echo ""
+        echo "Default wordlist: /usr/share/wordlists/dirb/common.txt"
+        echo ""
+        echo "Examples:"
+        echo "  gobuster dir http://10.0.0.1"
+        echo "  gobuster dns example.com"
+        echo "  gobuster vhost http://10.0.0.1"
+        echo "  gobuster fuzz 'http://10.0.0.1/page?id=FUZZ'"
+        echo ""
+        echo "Requirement: gobuster (apt install gobuster)"
+        exit 0
+        ;;
+
+    *)
+        echo "[!] Unknown mode: $1"
+        echo "Run: gobuster help"
+        exit 1
+        ;;
+esac

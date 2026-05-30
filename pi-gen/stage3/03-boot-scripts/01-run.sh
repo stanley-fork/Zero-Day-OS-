@@ -11,7 +11,7 @@ mkdir -p "${BIN}"
 
 for script in panic zeroday-boot zeroday-bootanim first-boot power-mode tamper-watch \
     cardputer-wifi-setup cardputer-wifi-toggle stealth-backlight-toggle usb-gadget-mode \
-    mac-rotate loot-organize opencode-session opencode-ask; do
+    mac-rotate loot-organize opencode-session opencode-ask device-lock webui; do
     if [ -f "${SCRIPT_SRC}/system/${script}" ]; then
         cp "${SCRIPT_SRC}/system/${script}" "${BIN}/${script}"
         chmod +x "${BIN}/${script}"
@@ -86,5 +86,63 @@ on_chroot << EOF
 systemctl enable zeroday-boot.service
 systemctl enable tamper-watch.service
 EOF
+
+# Install additional systemd services from project configs
+for svc in webui.service ragnar.service; do
+    if [ -f "${PROJECT_ROOT}/configs/systemd/${svc}" ]; then
+        cp "${PROJECT_ROOT}/configs/systemd/${svc}" "${SYSTEMD}/${svc}"
+        echo "[zeroday] Installed service: ${svc}"
+    fi
+done
+
+# zeroday-gui and zeroday-tui are created by stage4
+# Disable ragnar by default (user must install Ragnar repo first)
+on_chroot << EOF
+systemctl disable ragnar.service 2>/dev/null || true
+EOF
+
+# Install config files
+CONF_DIR="${PROJECT_ROOT}/configs"
+
+# Bash configuration
+if [ -f "${CONF_DIR}/bash/.bashrc" ]; then
+    cp "${CONF_DIR}/bash/.bashrc" "${ROOTFS_DIR}/root/.bashrc"
+    echo "[zeroday] Installed: .bashrc"
+fi
+
+# MOTD
+if [ -f "${CONF_DIR}/motd/motd" ]; then
+    cp "${CONF_DIR}/motd/motd" "${ROOTFS_DIR}/etc/motd"
+    echo "[zeroday] Installed: motd"
+fi
+
+# Network configuration
+mkdir -p "${ROOTFS_DIR}/etc/systemd/network"
+for netfile in 20-wired.network 30-wireless.network 40-dongle.network; do
+    if [ -f "${CONF_DIR}/network/${netfile}" ]; then
+        cp "${CONF_DIR}/network/${netfile}" "${ROOTFS_DIR}/etc/systemd/network/${netfile}"
+        echo "[zeroday] Installed: ${netfile}"
+    fi
+done
+
+# Wayland/cage environment
+mkdir -p "${ROOTFS_DIR}/etc/xdg/cage"
+if [ -f "${CONF_DIR}/wayland/cage.env" ]; then
+    cp "${CONF_DIR}/wayland/cage.env" "${ROOTFS_DIR}/etc/xdg/cage/cage.env"
+    echo "[zeroday] Installed: cage.env"
+fi
+
+# WebUI HTML dashboard
+mkdir -p "${ROOTFS_DIR}/opt/cardputer/webui"
+if [ -f "${CONF_DIR}/webui/index.html" ]; then
+    cp "${CONF_DIR}/webui/index.html" "${ROOTFS_DIR}/opt/cardputer/webui/index.html"
+    echo "[zeroday] Installed: webui/index.html"
+fi
+
+# Create loot directories
+mkdir -p "${ROOTFS_DIR}/opt/cardputer/loot"/{creds,recon,general,exfil,uploads}
+mkdir -p "${ROOTFS_DIR}/opt/cardputer/config"/{c2,doh,tunnels,captive,webui,exfil-dns}
+mkdir -p "${ROOTFS_DIR}/opt/cardputer/roms" 2>/dev/null || true
+mkdir -p "${ROOTFS_DIR}/opt/cardputer/music" 2>/dev/null || true
 
 echo "[zeroday] Boot scripts and services installed."

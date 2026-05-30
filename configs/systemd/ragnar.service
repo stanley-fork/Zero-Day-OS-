@@ -1,0 +1,24 @@
+[Unit]
+Description=Ragnar Autonomous Network Scanner (ZERO-DAY OS)
+After=network-online.target zeroday-boot.service
+Wants=network-online.target
+Conflicts=panic.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/cardputer/ragnar
+Environment=RAGNAR_PORT=8091
+Environment=RAGNAR_HEADLESS=1
+Environment=RAGNAR_NO_EPD=1
+Environment=RAGNAR_NO_PISUGAR=1
+Environment=RAGNAR_NO_GPIO=1
+ExecStartPre=/bin/sleep 5
+ExecStart=/opt/cardputer/ragnar/venv/bin/python3 /opt/cardputer/ragnar/headlessRagnar.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/opt/cardputer/loot/general/ragnar.log
+StandardError=append:/opt/cardputer/loot/general/ragnar_error.log
+
+[Install]
+WantedBy=multi-user.target

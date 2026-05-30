@@ -17,6 +17,7 @@
 **Form Factor:** 85x54mm credit-card, built-in 46-key keyboard, 1.9" ST7789v3 LCD, 1500mAh battery  
 **Build System:** Fork of `pi-gen` (official Raspberry Pi OS image builder) with custom stages  
 **Base OS:** Debian 12 (bookworm) minimal + Kali Rolling repository overlay  
+**Display:** **Wayland (zeroday-comp → cage → Xorg+i3 fallback chain)** — big icon GUI launcher for 1.9" screen  
 **Status:** PRE-RELEASE — hardware not yet shipped, GPIO pinout pending final DTS
 
 ---
@@ -25,6 +26,27 @@
 
 ```
 zeroday-os/
+├── compositor/                     # zeroday-comp — Rust Wayland compositor
+│   ├── src/
+│   │   ├── main.rs                 #   Compositor entry point (stub: launches client directly)
+│   │   ├── input.rs                #   Fn-key compositor-level bindings (panic, stealth, quick-launch)
+│   │   └── panic_handler.rs        #   SIGTERM/SIGHUP handler — kills children before exit
+│   ├── Cargo.toml                  #   Smithay 0.7 (commented), minimal deps for stub
+│   ├── Cross.toml                  #   cross-rs config (aarch64 target, PKG_CONFIG paths)
+│   ├── Cross.Dockerfile            #   Custom cross-rs image with arm64 Wayland/DRM dev libs
+│   └── Makefile                    #   deps, cross-build, build-release, strip targets
+│
+├── terminal/                        # zeroday-term — Rust terminal emulator
+│   ├── src/
+│   │   ├── main.rs                 #   CLI entry point (clap argument parsing)
+│   │   ├── term.rs                 #   Terminal run loop (PTY read, key dispatch, Fn-key handling)
+│   │   ├── pty.rs                  #   PTY management via portable-pty
+│   │   ├── fn_keys.rs              #   Fn-key handler (Ctrl+Shift+C/V, Alt+Enter, etc.)
+│   │   ├── status_bar.rs           #   Battery%, WiFi IP, CPU temp, load, time
+│   │   └── render.rs               #   Screen buffer renderer (TODO: DRM/KMS framebuffer)
+│   ├── Cargo.toml                  #   portable-pty, vte, clap, nix, libc, ctrlc
+│   └── Makefile                    #   cross-build, build-release, strip targets
+│
 ├── pi-gen/                          # Forked pi-gen with custom stages
 │   ├── config                        # Build configuration
 │   │   ├── rpi-cm0                   # CM0-specific config
@@ -35,11 +57,13 @@ zeroday-os/
 │   ├── stage3/                       # ZERO-DAY OS core (our Stage A)
 │   │   ├── 00-configure-base         #   System tuning, users, locale
 │   │   ├── 01-kernel-dtb             #   Custom kernel + device tree
-│   │   ├── 02-xorg-i3               #   Minimal X + i3 WM
+│   │   ├── 02-xorg-i3                #   Xorg + i3 WM (TUI fallback)
 │   │   ├── 03-boot-scripts           #   Auto-start, panic, power mgmt
-│   │   ├── 04-hardware-enable        #   LCD, keyboard, audio, IMU, RTC
-│   │   ├── 05-terminal-st            #   st terminal, fbterm fallback
-│   │   └── 06-flipper-tui            #   Pygame GUI launcher
+│   │   ├── 04-hardware-enable         #   LCD, keyboard, audio, IMU, RTC
+│   │   ├── 05-terminal-st             #   st terminal, fbterm fallback, foot
+│   │   ├── 06-flipper-tui             #   Flipper Zero TUI (JanOS-app installer)
+│   │   ├── 07-zeroday-comp             #   Rust Wayland compositor (pre-built binary)
+│   │   └── 08-terminal-term              #   Rust terminal emulator (pre-built binary)
 │   ├── stage4/                       # Hacking tools (our Stage B)
 │   │   ├── 00-kali-repos             #   Add Kali rolling repos
 │   │   ├── 01-wifi-tools             #   aircrack-ng, hcxdumptool, hostapd
@@ -54,7 +78,8 @@ zeroday-os/
 │   │   ├── 10-wifi-dongle            #   RTL8821CU DKMS driver
 │   │   ├── 11-subghz-nfc-tools       #   Sub-GHz CC1101 + NFC PN532 tools
 │   │   ├── 12-meshtastic-tools       #   Meshtastic LoRa mesh
-│   │   └── 13-media-tools             #   ffplay, alsa-utils (radio + walkie-talkie)
+│   │   ├── 13-media-tools             #   ffplay, alsa-utils (radio + walkie-talkie)
+│   │   └── 14-games-entertainment      #   DOOM, RetroArch, yt-dlp, cage, mpv
 │   ├── stage5/                       # Zero-touch setup (our Stage C)
 │   │   ├── 00-first-boot             #   First-boot wizard
 │   │   ├── 01-opencode               #   OpenCode CLI install
@@ -130,7 +155,10 @@ zeroday-os/
 │   │   ├── rf-capture
 │   │   ├── cardputer-battery
 │   │   ├── monsterctl
-│   │   └── install-janos             # JanOS-app installer/launcher
+│   │   ├── install-janos             # JanOS-app installer/launcher
+│   │   ├── yt                         # YouTube search/play/download
+│   │   ├── doom-play                  # DOOM launcher (chocolate-doom)
+│   │   └── retro-play                 # Retro game emulator (RetroArch)
 │   ├── system/
 │   │   ├── panic
 │   │   ├── zeroday-bootanim        # Boot animation (glitch ASCII)
@@ -149,16 +177,24 @@ zeroday-os/
 ├── configs/                          # System configs
 │   ├── i3/
 │   │   └── config                    #   i3 keybindings + Omni-Key
+│   ├── sway/
+│   │   └── config                    #   Sway Wayland config (alternative WM)
 │   ├── st/
 │   │   └── config.h                  #   st terminal config (small screen)
 │   ├── systemd/
 │   │   ├── zeroday-boot.service      #   Boot orchestration
+│   │   ├── zeroday-gui.service       #   Wayland cage kiosk (primary)
+│   │   ├── zeroday-tui.service       #   Xorg+i3 TUI (fallback)
 │   │   ├── panic.service             #   Emergency kill service
 │   │   ├── tamper-watch.service      #   IMU tamper detection
 │   │   ├── power-governor.service    #   CPU frequency scaling
 │   │   └── opencode.service         #   OpenCode launch service
+│   ├── wayland/
+│   │   └── cage.env                  #   Cage kiosk environment vars
 │   ├── fbterm/
 │   │   └── fbterm.conf               #   Framebuffer terminal config
+│   ├── retroarch/
+│   │   └── retroarch.cfg             #   RetroArch config (LCD optimized)
 │   ├── xorg/
 │   │   └── xorg.conf                 #   Minimal X config for ST7789
 │   ├── bash/
@@ -210,32 +246,43 @@ zeroday-os/
 │         │  │  ├─ Play boot animation             │             │
 │         │  │  │  (zeroday-bootanim — glitch ASCII)│            │
 │         │  │  ├─ Auto-login root on tty1         │             │
-│         │  │  └─ Start i3 via startx             │             │
+│         │  │  └─ Start compositor chain          │             │
 │         │  └─────────────────────────────────────┘             │
 │         │                                                       │
-│  [5.0s] Xorg + i3                                             │
-│         │  st terminal auto-starts                             │
-│         │  tmux default session created                        │
+│  [4.0s] zeroday-comp (Rust Wayland compositor)                 │
+│         │  If zeroday-comp found: launches cyber_launcher     │
+│         │  If zeroday-comp NOT found: falls back to cage      │
+│         │  zeroday-comp → launches client fullscreen           │
+│         │  DRM/KMS direct rendering → ST7789 LCD              │
+│         │  Fn-key compositor bindings active (panic, stealth)  │
+│         │  If zeroday-comp fails → OnFailure → cage            │
+│         │  If cage fails → OnFailure → Xorg+i3 (zeroday-tui)  │
 │         │                                                       │
-│  [6.0s] cyber_launcher GUI (Pygame)                          │
-│         │  Auto-launches full-screen in st                     │
-│         │  Binds to the ST7789 framebuffer                    │
-│         │  2x5 category grid renders on 1.9"                  │
+│  [5.0s] cyber_launcher (Pygame GUI)                           │
+│         │  Renders full-screen on ST7789v3                    │
+│         │  16 category icons in grid layout                    │
+│         │  Terminal: zeroday-term (Wayland) or st (X11)        │
+│         │  HDMI output: ZERODAY_DISPLAY=hdmi                   │
 │         │                                                       │
 │  [7.0s] READY                                                  │
 │         │  WiFi: down (stealth by default)                     │
 │         │  BT: down (stealth by default)                       │
 │         │  Radios activated only on user command               │
 │         │  Battery check: cardputer-battery                    │
+│         │  Games: DOOM + RetroArch ready                       │
+│         │  YouTube: yt-dlp ready (needs WiFi)                  │
 │         │                                                       │
 └────────────────────────────────────────────────────────────────┘
 ```
 
 **Key boot decisions:**
-- **No display manager.** Auto-login `root` on `tty1`, `.bash_profile` launches `startx` with i3.
+- **Wayland GUI primary.** Boot chain: `zeroday-comp` (Rust Wayland compositor, ~2MB) → `cage` (Wayland kiosk, ~3MB) → `Xorg+i3` (TUI fallback, ~30MB). The `zeroday-comp` compositor is tried first; if it fails, systemd `OnFailure=` automatically starts the next tier.
+- **zeroday-comp** is currently a stub launcher that starts cyber_launcher directly. The full Smithay 0.7 DRM/KMS backend is work-in-progress. The boot chain gracefully falls back to cage if the compositor binary is missing or crashes.
+- **zeroday-term** is the primary terminal under Wayland (installed as `/usr/local/bin/zeroday-term` with `st → zeroday-term` symlink). Under X11 fallback, `stterm` is used.
 - **Radios OFF at boot.** WiFi and Bluetooth are disabled by default. Activated only when you need them. Zero RF signature on power-up.
-- **GPU mem capped at 16MB.** We're running a TUI, not a desktop. The other 496MB belongs to userland.
-- **HDMI disabled by default.** `hdmi_force_hotplug=0`. The 1.9" LCD is the primary display. HDMI can be enabled via `cardputer-hdmi on`.
+- **GPU mem capped at 16MB.** We're running a single-app GUI on a tiny screen. The other 496MB belongs to userland.
+- **HDMI disabled by default.** `hdmi_force_hotplug=0`. The 1.9" LCD is the primary display. HDMI can be enabled via `export ZERODAY_DISPLAY=hdmi` for YouTube/DOOM/retro gaming on external monitor.
+- **GUI launcher uses big icons.** 16 categories displayed as large, high-contrast icons optimized for the 1.9" screen. Full-color, full-icon grid — not a text list.
 
 ---
 
@@ -247,20 +294,18 @@ Every megabyte is accounted for:
 |---|---|---|
 | **Linux Kernel** | ~12 MB | Stripped config, no unused modules |
 | **systemd** | ~15 MB | Minimal units, no NetworkManager |
-| **Xorg** | ~20 MB | fbdev driver, no GPU acceleration |
-| **i3 WM** | ~5 MB | Tiling only, no decorations |
-| **st terminal** | ~3 MB | Single instance, tmux handles splits |
-| **tmux** | ~4 MB | Session management |
-| **Pygame GUI** | ~25 MB | Python + pygame + SDL2 |
+| **zeroday-comp** | ~2 MB | Rust Wayland compositor (stub: launches client) |
+| **zeroday-term** | ~1.2 MB | Rust terminal emulator (status bar, Fn-keys) |
+| **Pygame GUI** | ~25 MB | Python + pygame + SDL2 (big icons) |
 | **Bash + core utils** | ~10 MB | Busybox where possible |
 | **dropbear (SSH)** | ~2 MB | On-demand only, not running at boot |
 | **wpa_supplicant** | ~8 MB | Started on-demand only |
 | **bluetoothd** | ~10 MB | Started on-demand only |
 | **Reserved GPU** | ~16 MB | Capped via `gpu_mem=16` |
-| **TOTAL SYSTEM** | **~130 MB** | |
-| **FREE FOR TOOLS** | **~382 MB** | Enough for nmap, aircrack, hashcat |
+| **TOTAL SYSTEM** | **~101 MB** | |
+| **FREE FOR TOOLS** | **~411 MB** | Enough for nmap, aircrack, DOOM, retro gaming |
 
-When a heavy tool runs (like Metasploit), the TUI can be backgrounded to free ~25MB. The `power-mode stealth` profile drops to single core and kills Xorg entirely (switching to fbterm direct), saving another ~25MB.
+When a heavy tool runs (like Metasploit), the GUI can be backgrounded. The `power-mode stealth` profile kills cage and drops to fbterm direct, saving ~28MB. YouTube video playback uses mpv (Wayland-native), which streams without buffering the full file.
 
 ---
 
@@ -339,7 +384,10 @@ systemctl disable triggerhappy
 
 #### 03-stage/02-xorg-i3
 ```bash
-# Install minimal X + i3
+# Install Xorg + i3 (TUI FALLBACK — only used if Wayland fails)
+# Also installs cage (Wayland kiosk, fallback compositor)
+# zeroday-comp is the PRIMARY compositor, installed in stage 07
+# zeroday-term is the PRIMARY terminal, installed in stage 08
 apt install -y --no-install-recommends \
     xserver-xorg-core \
     xserver-xorg-video-fbdev \
@@ -349,25 +397,9 @@ apt install -y --no-install-recommends \
     stterm \
     xdotool
 
-# Configure Xorg for ST7789v3
-# /etc/X11/xorg.conf:
-#   Section "Device"
-#     Identifier "ST7789"
-#     Driver "fbdev"
-#     Option "fbdev" "/dev/fb0"
-#   EndSection
-#   Section "Screen"
-#     Identifier "LCD"
-#     Device "ST7789"
-#     DefaultDepth 16
-#   EndSection
-
-# i3 config (see configs/i3/config)
-# - No title bars, no borders, no gaps
-# - Single window fullscreen by default
-# - All interactions via Fn key combos
-# - $mod set to Mod1 (Alt) which Fn maps to
-```
+# Xorg is the TUI fallback display system
+# zeroday-tui.service starts Xorg+i3 only if zeroday-comp and cage both fail
+# i3 config: same keybindings as GUI mode (Fn = Alt)
 
 #### 03-stage/03-boot-scripts
 ```bash
@@ -478,28 +510,125 @@ apt install -y --no-install-recommends \
 # /etc/fbterm.conf:
 #   font-size=8
 #   color-mode=256
+
+# foot (Wayland-native terminal)
+# Used as fallback terminal under cage/cage Wayland sessions
+# Lighter than st under Wayland
 ```
 
 #### 03-stage/06-flipper-tui
 ```bash
-# cyber_launcher — Python Pygame application
+# Flipper Zero TUI tools
+# Installs JanOS-app installer and related utilities
+# monsterctl CLI for M5MonsterC5 board communication
+```
+
+#### 03-stage/07-zeroday-comp
+```bash
+# zeroday-comp — Custom Rust Wayland compositor (PRIMARY display system)
+# Pre-built binary: compositor/target/aarch64-unknown-linux-gnu/release/zeroday-comp
+# ~1.0MB stripped, panic=abort, LTO, opt-level=z
+
+# Install the pre-built compositor binary
+install -m 755 "${COMP_BIN}" "${ROOTFS_DIR}/usr/local/bin/zeroday-comp"
+
+# If binary not found (build failed), gracefully skip — cage will be fallback
+# Install Wayland client libraries (needed by Pygame/SDL2 even if zeroday-comp is missing)
+apt install -y --no-install-recommends \
+    libwayland-client0 \
+    libwayland-cursor0 \
+    libwayland-egl1
+
+# Configuration: /etc/zeroday/comp.env
+#   WAYLAND_DISPLAY=wayland-0
+#   SDL_VIDEODRIVER=wayland
+#   PYGAME_HIDE_SUPPORT_PROMPT=1
+#   SDL_RENDER_DRIVER=opengles2
+#   ZERODAY_COMP_DRM=/dev/dri/card0
+#   ZERODAY_COMP_RESOLUTION=320x170
+#   ZERODAY_COMP_FPS=30
+#   ZERODAY_COMP_NO_CURSOR=1
+
+# Systemd service: zeroday-comp.service (PRIMARY)
+#   After=zeroday-boot.service
+#   Conflicts=zeroday-gui.service zeroday-tui.service
+#   ExecStart=/usr/local/bin/zeroday-comp --client /usr/local/bin/cyber_launcher --no-cursor
+#   OnFailure=zeroday-gui.service (falls back to cage)
+
+# zeroday-gui.service (cage, FALLBACK tier 1)
+#   Conflicts=zeroday-comp.service zeroday-tui.service
+#   ExecStart=/usr/bin/cage -- /usr/local/bin/cyber_launcher
+#   OnFailure=zeroday-tui.service (falls back to Xorg+i3)
+
+# Boot priority: zeroday-comp → cage (zeroday-gui) → Xorg+i3 (zeroday-tui)
+chroot "${ROOTFS_DIR}" systemctl enable zeroday-comp.service
+
+# Current status: stub launcher (launches client directly, no DRM rendering yet)
+# Smithay 0.7 trait impls (SeatHandler, XdgShellHandler, etc.) are WIP
+# Falls back to cage gracefully when binary missing or crashes
+```
+
+#### 03-stage/08-terminal-term
+```bash
+# zeroday-term — Custom Rust terminal emulator (PRIMARY terminal under Wayland)
+# Pre-built binary: terminal/target/aarch64-unknown-linux-gnu/release/zeroday-term
+# ~1.2MB stripped, panic=abort, LTO, opt-level=z
+
+# Install the pre-built terminal binary
+install -m 755 "${TERM_BIN}" "${ROOTFS_DIR}/usr/local/bin/zeroday-term"
+
+# Create compatibility symlink: st → zeroday-term
+# This allows cyber_launcher and scripts that call 'st' to use zeroday-term
+chroot "${ROOTFS_DIR}" ln -sf zeroday-term /usr/local/bin/st
+
+# Configuration: /etc/zeroday/term.env
+#   ZERODAY_TERM_FONT_SIZE=8
+#   ZERODAY_TERM_COLS=40
+#   ZERODAY_TERM_ROWS=19
+#   ZERODAY_TERM_WIDTH=320
+#   ZERODAY_TERM_HEIGHT=170
+#   ZERODAY_TERM_SHELL=/bin/bash
+#   ZERODAY_TERM_STATUS_BAR=1
+#   ZERODAY_TERM_COLORS=256
+
+# Features:
+#   - PTY-based terminal (portable-pty for process management)
+#   - vte terminal parser (full xterm-256color escape sequences)
+#   - Status bar: Battery%, WiFi IP, CPU temp, load avg, clock
+#   - Fn-key shortcuts: Fn+Enter (new terminal), Fn+Esc (close),
+#     Fn+PgUp/PgDn (font size), Ctrl+Shift+C/V (copy/paste)
+#   - Optimized for 320x170 LCD, 46-key keyboard, no mouse
+#   - No Smithay dependency — renders via DRM/KMS framebuffer (WIP)
+
+# If zeroday-term is missing, stterm (st) is used as fallback
+```
+
+#### 03-stage/07-gui-launcher
+```bash
+# cyber_launcher — Python Pygame GUI application (PRIMARY display)
 # /usr/local/bin/cyber_launcher
+#
+# Display: Wayland (cage kiosk) primary, Xorg+i3 TUI fallback
 #
 # Architecture:
 #   App (Pygame)
-#   ├── State: HOME (Level 1 — 4x3 icon grid)
-#   │   ├── [WIFI]  → List → Action/Prompt
-#   │   ├── [M5MONSTER] → List → Action/Prompt
-#   │   ├── [NET]   → List → Action/Prompt
-#   │   ├── [BT]    → List → Action/Prompt
-#   │   ├── [IR]    → List → Action/Prompt
-#   │   ├── [CAM]   → List → Action/Prompt
-#   │   ├── [PAYLD] → List → Action/Prompt
-#   │   ├── [RADIO] → List → WALKIE_TALKIE inline
-#   │   ├── [MEDIA] → List → MEDIA_PLAYER inline
-#   │   ├── [SHELL] → List → Action/Prompt
-#   │   ├── [SYS]   → List → Action/Prompt
-#   │   └── [OPEN]  → List → Action/Prompt
+#   ├── State: HOME (Level 1 — big icon grid, 4×4 on 320×170)
+#   │   ├── [WIFI]    → List → Action/Prompt     (Cyan)
+#   │   ├── [M5MON]   → List → Action/Prompt     (Red)
+#   │   ├── [NET]     → List → Action/Prompt     (Blue)
+#   │   ├── [BT]      → List → Action/Prompt     (Soft Blue)
+#   │   ├── [IR]      → List → Action/Prompt     (Orange)
+#   │   ├── [CAM]     → List → Action/Prompt     (Pink)
+#   │   ├── [PAYLD]   → List → Action/Prompt     (Gold)
+#   │   ├── [RADIO]   → List → WALKIE_TALKIE     (Purple)
+#   │   ├── [MEDIA]   → List → MEDIA_PLAYER       (Green)
+#   │   ├── [YT]      → List → Action/Prompt     (YouTube Red)
+#   │   ├── [GAMES]   → List → Action/Prompt     (Gaming Purple)
+#   │   ├── [RETRO]   → List → Action/Prompt     (Retro Orange)
+#   │   ├── [SHELL]   → List → Action/Prompt     (Red)
+#   │   ├── [SYS]     → List → Action/Prompt     (Grey)
+#   │   ├── [OPENCODE]→ List → Action/Prompt     (Yellow)
+#   │   └── [OPEN]    → FILE_BROWSER              (Cyan)
 #   │
 #   ├── State: LIST (Level 2 — scrollable tool list)
 #   │   └── Each category has its tools listed with descriptions
@@ -507,12 +636,17 @@ apt install -y --no-install-recommends \
 #   └── State: PROMPT (Level 3 — argument input for commands)
 #       ├── Input validation with regex per argument type
 #       ├── shlex.quote() for all arguments
-#       ├── [Enter] to execute (spawns st terminal)
+#       ├── [Enter] to execute (spawns st or foot terminal)
 #       └── [Tab] to cycle between argument fields
 #
 # Inline states (no terminal spawn):
 #   WALKIE_TALKIE: UDP broadcast PTT, port 42420, 30s timeout
 #   MEDIA_PLAYER:  ffplay-based radio + local music (shuffle)
+#
+# New categories (Entertainment):
+#   YT: YouTube search/play/audio/download via yt-dlp + ffplay/mpv
+#   GAMES: DOOM (chocolate-doom) — shareware + FreeDOOM WADs pre-installed
+#   RETRO: RetroArch + NES/SNES/GB/GBC/GBA/Genesis emulator cores
 #
 # Key bindings:
 #   ↑↓←→   Navigate
@@ -520,7 +654,8 @@ apt install -y --no-install-recommends \
 #   Esc     Go back / Exit
 #   Space   PTT (Walkie Talkie mode only)
 #
-# The GUI renders via Pygame (SDL2) on DRM/KMS or X11
+# The GUI renders via Pygame (SDL2) on Wayland DRM/KMS (primary)
+# or X11 (fallback via zeroday-tui.service)
 ```
 
 ### Stage 4 — Hacking Tools (Custom)
@@ -740,6 +875,115 @@ apt install -y --no-install-recommends \
 # music-player — Local music player via ffplay (shuffle from /opt/cardputer/music)
 ```
 
+### Stage 4.5 — Games & Entertainment (Custom)
+
+#### 04-stage/14-games-entertainment
+```bash
+# ─────────────────────────────────────────────────────────────
+# DOOM — The classic FPS, runs natively on ARM64
+# ─────────────────────────────────────────────────────────────
+apt install -y --no-install-recommends \
+    chocolate-doom \
+    freedoom
+
+# chocolate-doom: faithful DOOM port, runs at 320x200 natively
+# freedoom: completely free WAD files (Phase 1 + Phase 2)
+# /opt/cardputer/doom/wads/ — WAD directory
+#
+# doom-play play [wad]     → Launch DOOM (auto-detect WAD)
+# doom-play shareware      → Download/setup shareware WAD
+# doom-play list            → List installed WADs
+#
+# On LCD: scales to 320x170 (DOOM's native 320x200 is nearly perfect!)
+# On HDMI: fullscreen 1080p with ZERODAY_DISPLAY=hdmi
+#
+# Keyboard mapping (46-key):
+#   W/A/S/D or Arrows = Move
+#   Space = Use/Open
+#   Ctrl or Left Shift = Fire
+#   Tab = Map
+#   1-7 = Select weapon
+#   Esc = Menu
+
+# ─────────────────────────────────────────────────────────────
+# RetroArch — Multi-system emulator
+# ─────────────────────────────────────────────────────────────
+apt install -y --no-install-recommends \
+    retroarch \
+    libretro-fceumm \
+    libretro-snes9x \
+    libretro-gambatte \
+    libretro-mgba \
+    libretro-genesisplusgx
+
+# Emulator cores installed:
+#   FCEUmm          → NES / Famicom
+#   Snes9x          → SNES / Super Famicom
+#   Gambatte         → Game Boy / Game Boy Color
+#   mGBA             → Game Boy Advance
+#   Genesis Plus GX  → Sega Genesis / Mega Drive / Master System
+#
+# ROM directories: /opt/cardputer/retro/roms/<system>/
+# Saves: /opt/cardputer/retro/saves/
+# RetroArch config: /opt/cardputer/config/retroarch/retroarch.cfg
+#
+# retro-play play nes <rom>     → Launch NES game
+# retro-play play gba <rom>     → Launch GBA game
+# retro-play list [system]       → List ROMs
+# retro-play cores               → Check installed cores
+# retro-play setup                → Configure RetroArch for LCD
+
+# ─────────────────────────────────────────────────────────────
+# YouTube — Search, play, download videos
+# ─────────────────────────────────────────────────────────────
+apt install -y --no-install-recommends \
+    yt-dlp \
+    mpv
+
+# yt-dlp: YouTube CLI downloader (search, stream URLs, download)
+# mpv: Wayland-native video player (better than ffplay for streaming)
+# ffplay: fallback player (already installed via media-tools)
+#
+# On LCD: audio-only mode (yt audio) — video scaled down or hidden
+# On HDMI: full video playback with ZERODAY_DISPLAY=hdmi
+#
+# yt search <query>            → Search and select video
+# yt play <url|id>             → Stream video (480p max on arm64)
+# yt audio <url|id>            → Audio only (saves battery)
+# yt download <url>            → Download video to SD card
+# yt download-audio <url>      → Download audio (OPUS)
+# yt trending                   → Browse trending videos
+# yt history                    → Show play history
+#
+# Output directory: /opt/cardputer/loot/yt/
+# Play history: /opt/cardputer/config/yt_history.txt
+
+# ─────────────────────────────────────────────────────────────
+# Wayland GUI — Primary display system
+# ─────────────────────────────────────────────────────────────
+apt install -y --no-install-recommends \
+    cage \
+    foot
+
+# cage: Wayland kiosk compositor (primary display)
+#   - Runs cyber_launcher fullscreen, single client
+#   - ~3MB RAM, no window manager overhead
+#   - Direct DRM/KMS rendering
+#   - If cage fails → zeroday-tui.service (Xorg+i3) takes over
+#
+# foot: Wayland-native terminal (lighter than st under Wayland)
+#   - Used for spawning terminal sessions from GUI launcher
+#   - Falls back to st if under X11
+
+# ─────────────────────────────────────────────────────────────
+# Optional: Sway (full Wayland WM, heavier ~15MB)
+# ─────────────────────────────────────────────────────────────
+# sway is NOT installed by default (too much RAM for kiosk use)
+# If multi-window Wayland is needed:
+#   apt install sway
+# See configs/sway/config for ZERO-DAY OS keybindings
+```
+
 ### Stage 5 — Zero-Touch Setup (Custom)
 
 #### 05-stage/00-first-boot
@@ -912,6 +1156,7 @@ OFFENSIVE_PROCS="$OFFENSIVE_PROCS netcat ncat socat chisel rtl tcpdump"
 OFFENSIVE_PROCS="$OFFENSIVE_PROCS python perl ruby ir-replay ir-brute"
 OFFENSIVE_PROCS="$OFFENSIVE_PROCS john hydra gobuster responder arpspoof dnsspoof"
 OFFENSIVE_PROCS="$OFFENSIVE_PROCS ffplay wifi-survey-log doh-proxy mac-rotate quick-c2 tunnel-mgr"
+OFFENSIVE_PROCS="$OFFENSIVE_PROCS mpv yt-dlp retroarch chocolate-doom doom retro-play yt"
 
 for proc in $OFFENSIVE_PROCS; do
     pkill -9 "$proc" 2>/dev/null
@@ -1544,22 +1789,266 @@ Both send the same serial commands to the M5MonsterC5 board. Choose based on wor
 
 | Resource | Cardputer Zero | Ragnar requirement |
 |---|---|---|
-| RAM | 512MB (382MB free) | 2–8GB |
-| Python stack | Minimal | ML libs, Scikit-learn, etc. |
-| Web dashboard | No browser | Flask/Dash UI |
-| Nuclei + ZAP | No Go runtime | Required for full scans |
+| RAM | 512MB (382MB free) | 2–8GB (full) |
+| Python stack | Lightweight core only | ML libs, Scikit-learn, etc. |
+| Web dashboard | External browser | Flask/SocketIO UI |
+| Nuclei + ZAP | Not installed | Required for full scans |
 
-For the complete Ragnar experience, run it on a separate machine (8GB+ RAM) and use ZERO-DAY OS as the hands-on attack tool. Feed ragnar-scan output to Ragnar for AI-powered analysis.
+**Solution: Vendored Ragnar Port** — We now run Ragnar in headless mode as a separate service on port 8091, with only the lightweight Python core (Flask, python-nmap, paramiko, SQLAlchemy). The full ML/AI stack and e-paper display are disabled. A `ragnar-ctl` wrapper script provides on-device control:
+
+```bash
+ragnar-ctl start          # Start headless Ragnar on port 8091
+ragnar-ctl stop           # Stop Ragnar
+ragnar-ctl status         # Show status + dashboard URL
+ragnar-ctl url            # Print dashboard URL
+ragnar-ctl scan           # Trigger network scan
+ragnar-ctl vuln [target]  # Trigger vulnerability scan
+ragnar-ctl auto           # Enable automation (orchestrator)
+ragnar-ctl manual         # Disable automation (manual mode)
+ragnar-ctl logs [n]       # Show recent logs
+ragnar-ctl install        # Clone + install Ragnar from GitHub
+ragnar-ctl update         # Update Ragnar (git pull)
+```
+
+**Memory budget for Ragnar headless:**
+- Python3 + Flask: ~40MB
+- nmap scanning: ~25MB
+- Total Ragnar headless: ~80MB (fits alongside cyber_launcher on 512MB device)
+- Full Ragnar (with AI, e-paper, advanced vuln): requires separate 8GB+ machine
 
 ---
 
-## 9. Flipper TUI — Technical Design
+## 8i. YouTube Player
+
+The `yt` command provides YouTube search, streaming, and download on the Cardputer Zero. It uses `yt-dlp` for search/download and `mpv` (Wayland) or `ffplay` (fallback) for playback.
+
+### Architecture
+
+```
+                         Cardputer Zero
+┌──────────────────────────────────────────┐
+│                                          │
+│  yt search <query>                      │
+│    └── yt-dlp --flat-playlist → list    │
+│        └── Interactive selection         │
+│            └── mpv -ytdl-format=worst   │
+│                └── Stream to display     │
+│                                          │
+│  yt audio <url>                          │
+│    └── mpv --no-video (LCD mode)        │
+│    └── mpv --fullscreen (HDMI mode)      │
+│                                          │
+│  yt download <url>                       │
+│    └── yt-dlp -f worst → /loot/yt/      │
+│                                          │
+│  yt download-audio <url>                 │
+│    └── yt-dlp --extract-audio → /music/  │
+│                                          │
+│  ZERODAY_DISPLAY=hdmi                    │
+│    └── Enables fullscreen video output    │
+│                                          │
+│  Default (LCD 320x170):                  │
+│    └── Audio-only or low-res video       │
+│    └── mpv --no-video (saves battery)    │
+│                                          │
+└──────────────────────────────────────────┘
+```
+
+### Display Modes
+
+| Mode | Setting | Playback | RAM |
+|---|---|---|---|
+| **LCD (default)** | `ZERODAY_DISPLAY=` (unset) | Audio-only via mpv `--no-video` | ~15MB |
+| **HDMI** | `export ZERODAY_DISPLAY=hdmi` | Fullscreen video via mpv | ~30MB |
+
+### Playback Quality
+
+- **LCD**: `worstaudio` format (audio-only, ~64kbps Opus) — battery-friendly
+- **HDMI**: `worst[height<=480]` (240-480p video) — watchable on external display
+- Hardware video decode via BCM2837's H.264 codec (1080p30 capable)
+
+---
+
+## 8j. DOOM
+
+DOOM runs natively on the Cardputer Zero via `chocolate-doom`, a faithful source port of the original DOOM engine. The 320x170 LCD is nearly a perfect match for DOOM's native 320x200 resolution.
+
+### WAD Management
+
+| WAD | Type | Path | Notes |
+|---|---|---|---|
+| `freedoom1.wad` | Free | `/opt/cardputer/doom/wads/` | Pre-installed, Phase 1 |
+| `freedoom2.wad` | Free | `/opt/cardputer/doom/wads/` | Pre-installed, Phase 2 |
+| `doom1.wad` | Shareware | `/opt/cardputer/doom/wads/` | Download via `doom-play shareware` |
+| `doom.wad` | Commercial | `/opt/cardputer/doom/wads/` | User-supplied |
+| `doom2.wad` | Commercial | `/opt/cardputer/doom/wads/` | User-supplied |
+
+### Keyboard Mapping
+
+```
+ ┌─────────────────────────────────────┐
+ │  W/A/S/D       = Move / Strafe      │
+ │  Arrows         = Move / Strafe      │
+ │  Space          = Use / Open doors    │
+ │  Ctrl / LShift  = Fire weapon        │
+ │  Tab            = Automap             │
+ │  1-7            = Select weapon       │
+ │  Esc            = Menu / Quit         │
+ │  F1             = Help                │
+ └─────────────────────────────────────┘
+```
+
+### Memory Usage
+
+chocolate-doom uses approximately **8-15MB RAM** depending on WAD size, leaving plenty of headroom on the 512MB device.
+
+---
+
+## 8k. Retro Gaming (RetroArch)
+
+The `retro-play` command provides a unified interface for retro game emulation on the Cardputer Zero. It leverages RetroArch with lightweight libretro cores optimized for ARM64.
+
+### Supported Systems
+
+| System | Core | RAM (idle) | ROM Dir | Extensions |
+|---|---|---|---|---|
+| NES | FCEUmm | ~8MB | `roms/nes/` | .nes .fds .unf |
+| SNES | Snes9x | ~15MB | `roms/snes/` | .smc .sfc .swc .fig |
+| Game Boy | Gambatte | ~5MB | `roms/gb/` | .gb .dmg |
+| GBC | Gambatte | ~5MB | `roms/gbc/` | .gbc |
+| GBA | mGBA | ~20MB | `roms/gba/` | .gba |
+| SMS | Genesis Plus GX | ~12MB | `roms/sms/` | .sms |
+| Genesis | Genesis Plus GX | ~15MB | `roms/genesis/` | .gen .md .smd .bin |
+| Atari 2600 | Stella | ~5MB | `roms/atari2600/` | .a26 .bin |
+| PC Engine | Mednafen PCE | ~10MB | `roms/pcengine/` | .pce .tg16 .cue |
+| Lynx | Mednafen Lynx | ~8MB | `roms/lynx/` | .lnx |
+
+### Controls (46-key keyboard)
+
+```
+ ┌─────────────────────────────────────┐
+ │  Arrows         = D-Pad             │
+ │  Z / J          = Button A          │
+ │  X / K          = Button B          │
+ │  Space / Enter  = Start             │
+ │  Tab            = Select             │
+ │  F1             = RetroArch menu     │
+ │  F2             = Save state         │
+ │  F4             = Load state        │
+ │  F5/F6          = State slot -/+    │
+ │  Esc             = Quit              │
+ └─────────────────────────────────────┘
+```
+
+### RetroArch Configuration
+
+Optimized for the 320x170 LCD:
+- RGUI menu driver (lightweight, no desktop dependencies)
+- `video_driver = gl` with OpenGL ES 2.0 rendering
+- `audio_driver = alsa` (direct ALSA, no PulseAudio overhead)
+- Save states in `/opt/cardputer/retro/saves/`
+- `audio_latency = 64` (low-latency audio)
+- `fastforward_ratio = 4.0` (4x speed for fast-forward)
+
+---
+
+## 9. Display System — Wayland GUI Primary (zeroday-comp)
+
+ZERO-DAY OS uses a three-tier display system with automatic fallback:
+
+### Tier 1: zeroday-comp (Rust Wayland Compositor — Primary)
+
+```
+Boot → systemd → zeroday-boot.service → zeroday-comp (Rust Wayland)
+                                           │
+                                           ▼
+                                     cyber_launcher
+                                     (Pygame/SDL2)
+                                           │
+                                           ▼
+                                     ST7789v3 LCD (DRM/KMS)
+```
+
+**zeroday-comp** is a custom Rust Wayland compositor built with Smithay 0.7, purpose-built for the Cardputer Zero. Current status: **stub launcher** that starts cyber_launcher directly. The full Smithay DRM/KMS rendering backend is work-in-progress (trait impls for SeatHandler, XdgShellHandler, BufferHandler, etc. are incomplete).
+
+| Feature | zeroday-comp | cage (Fallback) | Xorg+i3 (Fallback) |
+|---|---|---|---|
+| RAM | ~2 MB | ~3 MB | ~28 MB (Xorg 20 + i3 5 + st 3) |
+| Boot time | ~1s | ~1s | ~3s |
+| Terminal | zeroday-term | foot/st | stterm |
+| Fn-key bindings | Compositor-level | Not available | i3-level |
+| Panic key (Fn+P) | Compositor-level | Script-level | Script-level |
+| Stealth (Fn+Space) | Backlight toggle | Not available | Not available |
+| DRM/KMS | Direct (WIP) | Direct | fbdev driver |
+| Multi-window | No (kiosk) | No (kiosk) | Yes (tiling) |
+
+### Tier 2: cage (Wayland Kiosk — Fallback)
+
+If zeroday-comp fails (binary missing, crash, DRM issues), `zeroday-gui.service` automatically starts cage, which runs cyber_launcher fullscreen as a Wayland kiosk client.
+
+### Tier 3: Xorg+i3 (TUI — Last Resort)
+
+If both zeroday-comp and cage fail, `zeroday-tui.service` takes over with Xorg + i3 + stterm. This provides the same cyber_launcher but rendered via X11.
+
+### Boot Service Architecture
+
+```
+zeroday-boot.service
+    ├── zeroday-comp.service (Rust Wayland → cyber_launcher)
+    │       └── OnFailure → zeroday-gui.service (cage → cyber_launcher)
+    │               └── OnFailure → zeroday-tui.service (Xorg + i3 + stterm)
+    └── If zeroday-comp binary missing → cage starts via zeroday-gui.service
+```
+
+### zeroday-comp Internals
+
+```
+compositor/
+├── src/
+│   ├── main.rs          # Entry point, client launcher (stub)
+│   │                      # Currently launches cyber_launcher directly
+│   │                      # Full Smithay compositor: WIP (trait impls needed)
+│   ├── input.rs          # Fn-key compositor-level bindings
+│   │                      # Fn+P  → panic (kill all + wipe)
+│   │                      # Fn+Space → stealth (toggle backlight)
+│   │                      # Fn+Tab → launcher toggle
+│   │                      # Fn+Q  → close window
+│   │                      # Fn+O  → open OpenCode
+│   │                      # Plus quick-launch: Fn+N/B/S/W/C/I/A/G/R/Y/U
+│   └── panic_handler.rs  # SIGTERM/SIGHUP → kill children, clean exit
+├── Cargo.toml            # Smithay 0.7 (commented out), minimal deps for stub
+├── Cross.toml            # cross-rs config for aarch64
+└── Cross.Dockerfile      # Custom Docker image with arm64 Wayland/DRM dev libs
+```
+
+**Build:** `cross build --release --target aarch64-unknown-linux-gnu`
+**Binary:** ~1.0MB stripped (panic=abort, LTO, opt-level=z)
+**Current state:** Stub launcher. Smithay trait impls needed for full DRM/KMS rendering.
+
+### zeroday-term Internals
+
+```
+terminal/
+├── src/
+│   ├── main.rs          # CLI entry point (clap argument parsing)
+│   ├── term.rs          # Terminal run loop (PTY read, key dispatch, Fn-key)
+│   ├── pty.rs           # PTY management (portable-pty crate)
+│   ├── fn_keys.rs       # Fn-key handler (Ctrl+Shift+C/V, Alt+Enter, etc.)
+│   ├── status_bar.rs    # Battery%, WiFi IP, CPU temp, load, time
+│   └── render.rs         # Screen buffer renderer (TODO: DRM/KMS framebuffer)
+├── Cargo.toml            # portable-pty, vte, clap, nix, libc, ctrlc
+└── Makefile              # cross-build, build-release, strip
+```
+
+**Build:** `cross build --release --target aarch64-unknown-linux-gnu`
+**Binary:** ~1.2MB stripped (panic=abort, LTO, opt-level=z)
+**Current state:** Functional terminal with PTY I/O, status bar, and Fn-key handling. Screen rendering via DRM/KMS framebuffer is WIP (currently outputs to stdout/Wayland).
 
 ```
 Language:    Python 3
-Framework:   Pygame (SDL2 backend, no X11 dependency at runtime)
-Renderer:    SDL2 → DRM/KMS or X11 backend
-Screen Size: 320x170 (1.9" ST7789v3)
+Framework:   Pygame (SDL2 backend)
+Renderer:    SDL2 → Wayland (DRM/KMS) primary, X11 fallback
+Screen Size: 320x170 (1.9" ST7789v3) or 1920x1080 (HDMI)
 
 File: /usr/local/bin/cyber_launcher
 ```
@@ -1580,21 +2069,24 @@ import shlex
 import select
 
 class CyberLauncher:
-    """Main Flipper-style Pygame GUI launcher"""
+    """Main GUI launcher — big icons for small screen"""
     
     # Screen: 320x170, 30 FPS target
     # States: SPLASH → HOME → LIST → ACTION | PROMPT | WALKIE_TALKIE | MEDIA_PLAYER
     
-    CATEGORIES = [  # 12 categories, 4x3 grid
+    CATEGORIES = [  # 16 categories, 4×4 grid with big icons
         "WIFI", "M5MONSTER", "NET", "BT",
         "IR", "CAM", "PAYLD", "RADIO",
-        "MEDIA", "SHELL", "SYS", "OPEN"
+        "MEDIA", "YT", "GAMES", "RETRO",
+        "SHELL", "SYS", "OPENCODE", "OPEN"
     ]
     
-    # 12 categories fill a 4×3 grid perfectly
+    # 16 categories fill a 4×4 grid with large icons
     # Navigation: Arrow keys, Enter, Esc, Tab (in PROMPT mode)
     # Walkie-Talkie: Space = PTT, UDP broadcast on port 42420
     # Media Player: Left/Right = change station, Esc = stop
+    # YouTube: ytdl-based search/stream, audio-only on LCD
+    # Games: DOOM + RetroArch launcher
 ```
 
 ### Rendering System
@@ -1609,16 +2101,21 @@ TEXT_PRIMARY    = (43, 204, 255)     # Kali Cyan
 TEXT_WHITE      = (240, 250, 255)    # Near-white
 CMD_FLAG        = (255, 75, 75)      # Kali Red
 
-# Category colors — each of 12 categories has a unique color
+# Category colors — each of 16 categories has a unique color
 # WIFI=Cyan, M5MONSTER=Red, NET=Blue, BT=SoftBlue,
 # IR=Orange, CAM=Pink, PAYLD=Gold, RADIO=Purple,
-# MEDIA=Green, SHELL=Red, SYS=Grey, OPEN=Cyan
+# MEDIA=Green, YT=YouTubeRed, GAMES=GamingPurple, RETRO=RetroOrange,
+# SHELL=Red, SYS=Grey, OPENCODE=Yellow, OPEN=Cyan
+
+# Icons: Full-color PNG images (64x64 minimum, scaled to grid)
+# Each category has a dedicated icon file in assets/icons/
+# Grid cells are sized for finger-sized targets despite small screen
 
 # Fonts: Terminus (monospace, bitmap) preferred, fallback to system monospace
 # All drawing via pygame.draw.rect(), pygame.draw.line(), pygame.font.SysFont()
 
 # Screens: 320x170 at 30 FPS
-# HOME:     4×3 grid of categories (80px cells)
+# HOME:     4×4 grid of categories with big icons (80px cells)
 # LIST:     Scrollable tool list with colored sidebar
 # ACTION:   Confirmation dialog for command execution
 # PROMPT:   Multi-field argument input with validation
@@ -1992,40 +2489,65 @@ CONFIG_MODULE_FORCE_UNLOAD=y          # Force unload to free RAM
 Developer Machine (x86 Linux)
          │
          ▼
-┌─────────────────────┐
-│  docker build        │  ← pi-gen runs inside Docker
-│  ./build-docker.sh   │     for ARM cross-compilation
-│                      │
-│  Stage 0: debootstrap│  5 min
-│  Stage 1: base system│  10 min
-│  Stage 2: networking │  8 min
-│  Stage 3: ZERO-DAY   │  15 min (core customization)
-│  Stage 4: hacking    │  40 min (apt installs from Kali)
-│  Stage 5: zero-touch │  5 min (cleanup, first-boot)
-│                      │
-│  Total: ~80-120 min   │
-└─────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│  Step 1: Cross-compile Rust components                │
+│                                                       │
+│  cd compositor && make cross-build                    │
+│    → cross-rs Docker container (zeroday-comp-cross)   │
+│    → aarch64-unknown-linux-gnu target                  │
+│    → compositor/target/.../release/zeroday-comp (1.0MB)│
+│                                                       │
+│  cd terminal && make cross-build                      │
+│    → cross-rs Docker container                        │
+│    → aarch64-unknown-linux-gnu target                  │
+│    → terminal/target/.../release/zeroday-term (1.2MB)  │
+└─────────────────────────────────────────────────────┘
          │
          ▼
-  pi-gen/deploy/zeroday-os-.img
+┌─────────────────────────────────────────────────────┐
+│  Step 2: Build OS image (pi-gen Docker)               │
+│  ./build-docker.sh                                    │
+│                                                       │
+│  Docker container copies:                             │
+│    compositor/ → /project/compositor/                  │
+│    terminal/   → /project/terminal/                    │
+│    scripts/    → /project/scripts/                     │
+│    overlays/   → /project/overlays/                    │
+│    kernel/     → /project/kernel/                      │
+│    configs/    → /project/configs/                     │
+│    tui/        → /project/tui/                         │
+│    pi-gen/     → /pi-gen/                              │
+│                                                       │
+│  Stage 0: debootstrap              → 5 min            │
+│  Stage 1: base system              → 10 min           │
+│  Stage 2: networking               → 8 min            │
+│  Stage 3: ZERO-DAY core            → 15 min           │
+│    07-zeroday-comp: copies pre-built binary            │
+│    08-terminal-term: copies pre-built binary           │
+│  Stage 4: hacking tools            → 40 min (Kali apt) │
+│  Stage 5: zero-touch               → 5 min            │
+│                                                       │
+│  Total: ~25-30 min                                    │
+└─────────────────────────────────────────────────────┘
          │
          ▼
-┌─────────────────────┐
-│  Flash to microSD   │  ← dd or BalenaEtcher
-│  (32GB minimum)      │
-│                      │
-│  sudo dd if=zeroday-os.img \
-│    of=/dev/sdX bs=4M \
-│    status=progress   │
-└─────────────────────┘
+   pi-gen/deploy/2026-05-30-zeroday-os--full.zip
          │
          ▼
-┌─────────────────────┐
-│  Boot on Cardputer  │  ← First-boot wizard runs
-│  Zero               │     auto-login → i3 → TUI
-│                      │
-│  ~7 seconds to TUI   │
-└─────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│  Flash to microSD (32GB minimum)                      │
+│                                                       │
+│  sudo dd if=zeroday-os.img of=/dev/sdX bs=4M \       │
+│    status=progress conv=fsync                          │
+└─────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────┐
+│  Boot on Cardputer Zero                                │
+│                                                       │
+│  Boot chain: zeroday-comp → cage → Xorg+i3             │
+│  ~7 seconds to GUI launcher                           │
+└─────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -2055,11 +2577,14 @@ The Cardputer Zero has not yet shipped. These items require final hardware or pi
 - Captive portal evil twin (wifi-evil-twin)
 - Boot animation (zeroday-bootanim)
 - The TUI app (`cyber_launcher`)
+- zeroday-comp (Rust Wayland compositor — stub launcher, DRM backend WIP)
+- zeroday-term (Rust terminal emulator — functional, DRM rendering WIP)
 - i3 configuration and keybindings
 - Panic system
 - Power management scripts
 - OpenCode session wrapper
 - pi-gen stage 3 (base system customization)
+- pi-gen stages 07-zeroday-comp and 08-terminal-term (pre-built binary install)
 - Kernel config (based on BCM2837, will need overlay adjustments)
 - USB gadget mode scripts (framework only, needs hardware test)
 - RTL8821CU dongle setup script

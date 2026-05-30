@@ -1,0 +1,463 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/wardrive
+# WiFi wardriving with GPS support and KML export
+# Inspired by Raspyjack's wardriving payload
+# Uses: iw, gpsd (optional), python3
+
+LOOT_DIR="/opt/cardputer/loot/wardrive"
+CONFIG_DIR="/opt/cardputer/config"
+
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+usage() {
+    echo -e "${CYAN}wardrive${NC} — WiFi Wardriving for ZERO-DAY OS"
+    echo ""
+    echo "Usage: wardrive <command> [options]"
+    echo ""
+    echo "Commands:"
+    echo "  start [iface]                  Start wardriving scan"
+    echo "  stop                           Stop wardriving and save data"
+    echo "  status                         Show current wardrive status"
+    echo "  export [session]               Export to KML (Google Earth)"
+    echo "  export-csv [session]            Export to CSV"
+    echo "  list                            List saved wardrive sessions"
+    echo "  replay [session]               Replay a wardrive on map"
+    echo "  upload [session]                Upload to WiGLE (needs API key)"
+    echo "  gps-status                      Check GPS status"
+    echo ""
+    echo "Options:"
+    echo "  -d <duration>                   Duration in seconds (0=indefinite)"
+    echo "  -i <iface>                      WiFi interface (default: wlan0)"
+    echo "  -o <output>                     Output file prefix"
+    echo ""
+    echo "GPS Sources (priority order):"
+    echo "  1. gpsd (USB/UART GPS module)"
+    echo "  2. Meshtastic GPS (via mesh-chat)"
+    echo "  3. Network-based (less accurate)"
+    echo "  4. Manual coordinates"
+    echo ""
+    echo "Output: ${LOOT_DIR}/"
+}
+
+check_deps() {
+    for cmd in iw python3; do
+        if ! command -v "$cmd" &>/dev/null; then
+            echo -e "${RED}[!] $cmd not found. Install: apt install iw python3${NC}"
+            exit 1
+        fi
+    done
+}
+
+get_gps() {
+    # Try gpsd first
+    if command -v gpspipe &>/dev/null && pgrep gpsd &>/dev/null; then
+        local gps_data=$(gpspipe -w -n 5 2>/dev/null | python3 -c "
+import sys, json
+for line in sys.stdin:
+    try:
+        d = json.loads(line)
+        if d.get('class') == 'TPV' and d.get('mode', 0) >= 2:
+            print(f\"{d.get('lat',0)},{d.get('lon',0)},{d.get('alt','NaN')},{d.get('speed','NaN')}\")
+            sys.exit(0)
+    except: pass
+print('0,0,NaN,NaN')
+" 2>/dev/null)
+        if [ "$gps_data" != "0,0,NaN,NaN" ]; then
+            echo "$gps_data"
+            return 0
+        fi
+    fi
+    
+    # Try cgps
+    if command -v cgps &>/dev/null; then
+        local lat=$(cgps -s -m 2>/dev/null | grep "latitude" | awk '{print $3}' | head -1)
+        local lon=$(cgps -s -m 2>/dev/null | grep "longitude" | awk '{print $3}' | head -1)
+        if [ -n "$lat" ] && [ -n "$lon" ]; then
+            echo "${lat},${lon},NaN,NaN"
+            return 0
+        fi
+    fi
+    
+    # No GPS available
+    echo "0,0,NaN,NaN"
+    return 1
+}
+
+get_wifi_networks() {
+    local iface="${1:-wlan0}"
+    
+    # Set monitor mode temporarily
+    local was_managed=$(iw dev "$iface" info 2>/dev/null | grep "type managed" | wc -l)
+    
+    # Use iw to scan (works in managed mode too, just slower)
+    iw dev "$iface" scan trigger 2>/dev/null
+    sleep 2
+    
+    # Parse scan results
+    iw dev "$iface" scan dump 2>/dev/null | python3 -c "
+import sys, re
+
+current = {}
+results = []
+
+for line in sys.stdin:
+    line = line.strip()
+    
+    if line.startswith('BSS'):
+        if current.get('bssid'):
+            results.append(current)
+        current = {'bssid': '', 'ssid': '', 'freq': '', 'signal': '', 'encryption': '', 'channel': ''}
+        m = re.search(r'([0-9a-f:]{17})', line)
+        if m:
+            current['bssid'] = m.group(1)
+    
+    elif 'SSID:' in line:
+        m = re.search(r'SSID: (.+)', line)
+        if m:
+            current['ssid'] = m.group(1).strip()
+    
+    elif 'freq:' in line:
+        m = re.search(r'freq: (\d+)', line)
+        if m:
+            current['freq'] = m.group(1)
+            freq = int(m.group(1))
+            if freq < 2500:
+                current['channel'] = str((freq - 2412) // 5 + 1)
+            else:
+                current['channel'] = str((freq - 5180) // 5 + 36)
+    
+    elif 'signal:' in line:
+        m = re.search(r'signal: (-?\d+\.\d+)', line)
+        if m:
+            current['signal'] = m.group(1)
+    
+    elif 'Authentication suites:' in line or 'RSN:' in line:
+        if 'WPA2' in line or 'RSN' in line:
+            current['encryption'] = 'WPA2'
+        elif 'WPA' in line:
+            current['encryption'] = 'WPA'
+        elif 'encryption:' in line and 'WEP' in line:
+            current['encryption'] = 'WEP'
+        elif not current.get('encryption'):
+            current['encryption'] = 'Open'
+
+if current.get('bssid'):
+    results.append(current)
+
+# Set default encryption
+for r in results:
+    if not r.get('encryption'):
+        r['encryption'] = 'Open'
+    if not r.get('ssid'):
+        r['ssid'] = '<hidden>'
+
+for r in results:
+    print(f\"{r['bssid']}|{r['ssid']}|{r.get('channel','?')}|{r.get('signal','?')}|{r.get('encryption','?')}|{r.get('freq','?')}\")
+" 2>/dev/null
+}
+
+start_wardrive() {
+    local iface="${1:-wlan0}"
+    local duration="${2:-0}"
+    local output_prefix="${3:-wardrive_$(date +%Y%m%d_%H%M%S)}"
+    
+    echo -e "${CYAN}╔══════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║   W A R D R I V E   S T A R T E D   ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════════════╝${NC}"
+    echo ""
+    
+    # Check WiFi interface
+    if ! iw dev "$iface" info &>/dev/null; then
+        echo -e "${RED}[!] WiFi interface ${iface} not found${NC}"
+        exit 1
+    fi
+    
+    # Enable WiFi if needed
+    rfkill unblock wifi 2>/dev/null || true
+    ip link set "$iface" up 2>/dev/null || true
+    
+    # Create output directory
+    mkdir -p "$LOOT_DIR"
+    
+    local output_file="${LOOT_DIR}/${output_prefix}"
+    local csv_file="${output_file}.csv"
+    local kml_file="${output_file}.kml"
+    
+    echo -e "${GREEN}[*] Interface: ${iface}${NC}"
+    echo -e "${GREEN}[*] Output: ${output_prefix}${NC}"
+    echo -e "${GREEN}[*] Duration: $([ $duration -eq 0 ] && echo 'indefinite' || echo "${duration}s")${NC}"
+    echo -e "${GREEN}[*] Scanning...${NC}"
+    echo ""
+    
+    local end_time=0
+    if [ "$duration" -gt 0 ]; then
+        end_time=$(($(date +%s) + duration))
+    fi
+    
+    local total_aps=0
+    local scan_count=0
+    
+    echo "timestamp,bssid,ssid,channel,signal_dbm,encryption,freq,lat,lon,alt,speed" > "$csv_file"
+    
+    while true; do
+        if [ "$end_time" -gt 0 ] && [ $(date +%s) -ge $end_time ]; then
+            break
+        fi
+        
+        # Get GPS coordinates
+        local gps_data
+        gps_data=$(get_gps 2>/dev/null || echo "0,0,NaN,NaN")
+        local lat=$(echo "$gps_data" | cut -d, -f1)
+        local lon=$(echo "$gps_data" | cut -d, -f2)
+        local alt=$(echo "$gps_data" | cut -d, -f3)
+        local speed=$(echo "$gps_data" | cut -d, -f4)
+        
+        # Scan networks
+        local networks
+        networks=$(get_wifi_networks "$iface" 2>/dev/null)
+        
+        if [ -n "$networks" ]; then
+            local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                
+                local bssid=$(echo "$line" | cut -d'|' -f1)
+                local ssid=$(echo "$line" | cut -d'|' -f2)
+                local channel=$(echo "$line" | cut -d'|' -f3)
+                local signal=$(echo "$line" | cut -d'|' -f4)
+                local encryption=$(echo "$line" | cut -d'|' -f5)
+                local freq=$(echo "$line" | cut -d'|' -f6)
+                
+                # Append to CSV
+                echo "${timestamp},${bssid},${ssid},${channel},${signal},${encryption},${freq},${lat},${lon},${alt},${speed}" >> "$csv_file"
+                total_aps=$((total_aps + 1))
+            done <<< "$networks"
+        fi
+        
+        scan_count=$((scan_count + 1))
+        printf "\r${GREEN}[*] Scan #%d | %d APs logged | GPS: %s,%s${NC}" "$scan_count" "$total_aps" "$lat" "$lon"
+        
+        sleep 5
+    done
+    
+    echo ""
+    echo -e "${GREEN}[+] Wardrive complete!${NC}"
+    echo -e "${GREEN}[*] Total APs: ${total_aps}${NC}"
+    echo -e "${GREEN}[*] CSV: ${csv_file}${NC}"
+    
+    # Auto-generate KML
+    generate_kml "$csv_file" "$kml_file"
+    echo -e "${GREEN}[*] KML: ${kml_file}${NC}"
+}
+
+generate_kml() {
+    local csv_file="$1"
+    local kml_file="${2:-${csv_file%.csv}.kml}"
+    
+    python3 << PYTHON_EOF
+import csv
+try:
+    with open("${csv_file}", "r") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    
+    # Remove duplicates (keep strongest signal per BSSID)
+    seen = {}
+    for row in rows:
+        bssid = row.get("bssid", "")
+        signal = float(row.get("signal_dbm", "-100") or "-100")
+        if bssid not in seen or signal > seen[bssid]["signal_dbm"]:
+            seen[bssid] = {**row, "signal_dbm": signal}
+    
+    unique = list(seen.values())
+    
+    kml = '''<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+<Document>
+  <name>ZERO-DAY OS Wardrive</name>
+  <description>WiFi access points logged by ZERO-DAY OS</description>
+  <Style id="open">
+    <IconStyle><color>ff00ff00</color><scale>0.5</scale></IconStyle>
+  </Style>
+  <Style id="wpa">
+    <IconStyle><color>ff00ffff</color><scale>0.5</scale></IconStyle>
+  </Style>
+  <Style id="wpa2">
+    <IconStyle><color>ff0000ff</color><scale>0.5</scale></IconStyle>
+  </Style>
+  <Style id="wep">
+    <IconStyle><color>ffffff00</color><scale>0.5</scale></IconStyle>
+  </Style>
+'''
+
+    for ap in unique:
+        ssid = ap.get("ssid", "hidden").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        bssid = ap.get("bssid", "?")
+        lat = ap.get("lat", "0")
+        lon = ap.get("lon", "0")
+        signal = ap.get("signal_dbm", "?")
+        encryption = ap.get("encryption", "Unknown")
+        channel = ap.get("channel", "?")
+        
+        if lat == "0" and lon == "0":
+            continue
+        
+        enc_style = "wpa2" if "WPA2" in encryption else "wpa" if "WPA" in encryption else "wep" if "WEP" in encryption else "open"
+        
+        kml += f'''  <Placemark>
+    <name>{ssid}</name>
+    <description>BSSID: {bSSID}
+Signal: {signal} dBm
+Encryption: {encryption}
+Channel: {channel}</description>
+    <styleUrl>#{enc_style}</styleUrl>
+    <Point><coordinates>{lon},{lat},0</coordinates></Point>
+  </Placemark>
+'''
+
+    kml += "</Document>\n</kml>"
+    
+    with open("${kml_file}", "w") as f:
+        f.write(kml)
+    print(f"KML written with {len(unique)} unique APs")
+except Exception as e:
+    print(f"KML generation error: {e}")
+PYTHON_EOF
+}
+
+stop_wardrive() {
+    if [ -f /tmp/wardrive.pid ]; then
+        kill "$(cat /tmp/wardrive.pid)" 2>/dev/null || true
+        rm -f /tmp/wardrive.pid
+        echo -e "${GREEN}[+] Wardrive stopped${NC}"
+    else
+        echo -e "${YELLOW}[!] No active wardrive session${NC}"
+    fi
+}
+
+show_status() {
+    if [ -f /tmp/wardrive.pid ] && kill -0 "$(cat /tmp/wardrive.pid)" 2>/dev/null; then
+        echo -e "${GREEN}[*] Wardrive is RUNNING (PID: $(cat /tmp/wardrive.pid))${NC}"
+    else
+        echo -e "${YELLOW}[*] Wardrive is NOT running${NC}"
+    fi
+    
+    local gps_status
+    if pgrep gpsd &>/dev/null; then
+        gps_status="${GREEN}GPS: Available (gpsd)${NC}"
+    else
+        gps_status="${YELLOW}GPS: Not available (no GPS hardware)${NC}"
+    fi
+    echo -e "    $gps_status"
+    echo -e "    Output: ${LOOT_DIR}/"
+}
+
+list_sessions() {
+    echo -e "${CYAN}[*] Wardrive sessions:${NC}"
+    if ls "${LOOT_DIR}"/*.csv 1>/dev/null 2>&1; then
+        for f in "${LOOT_DIR}"/*.csv; do
+            local ap_count=$(tail -n +2 "$f" | wc -l)
+            local date=$(basename "$f" | sed 's/wardrive_\(.*\)\.csv/\1/')
+            echo -e "  ${GREEN}${date}${NC} (${ap_count} APs)"
+        done
+    else
+        echo -e "${YELLOW}  No wardrive sessions found${NC}"
+    fi
+}
+
+upload_wigle() {
+    local session="$1"
+    local wigle_key
+    
+    if [ -f "${CONFIG_DIR}/wigle_api_key" ]; then
+        wigle_key=$(cat "${CONFIG_DIR}/wigle_api_key")
+    else
+        echo -e "${YELLOW}[!] WiGLE API key not configured.${NC}"
+        echo -e "${YELLOW}    Get one at https://wigle.net/account${NC}"
+        echo -ne "${CYAN}    Enter API key: ${NC}"
+        read -r wigle_key
+        mkdir -p "$CONFIG_DIR"
+        echo "$wigle_key" > "${CONFIG_DIR}/wigle_api_key"
+        chmod 600 "${CONFIG_DIR}/wigle_api_key"
+    fi
+    
+    local csv_file="${LOOT_DIR}/wardrive_${session}.csv"
+    if [ ! -f "$csv_file" ]; then
+        echo -e "${RED}[!] Session not found: ${session}${NC}"
+        exit 1
+    fi
+    
+    echo -e "${CYAN}[*] Uploading to WiGLE...${NC}"
+    curl -s -X POST \
+        -H "Authorization: Basic ${wigle_key}" \
+        -F "file=@${csv_file}" \
+        "https://api.wigle.net/api/v2/file/upload" 2>/dev/null
+    
+    echo -e "${GREEN}[+] Upload complete${NC}"
+}
+
+# Main
+check_deps
+mkdir -p "$LOOT_DIR" "$CONFIG_DIR"
+
+case "${1:-}" in
+    start)
+        shift
+        wardrive_start "${1:-wlan0}" "${2:-0}" "${3:-wardrive_$(date +%Y%m%d_%H%M%S)}"
+        ;;
+    stop)
+        stop_wardrive
+        ;;
+    status)
+        show_status
+        ;;
+    export)
+        session="${2:-$(ls -t "${LOOT_DIR}"/*.csv 2>/dev/null | head -1 | xargs basename 2>/dev/null | sed 's/wardrive_\(.*\)\.csv/\1/')}"
+        csv_file="${LOOT_DIR}/wardrive_${session}.csv"
+        if [ -f "$csv_file" ]; then
+            generate_kml "$csv_file"
+            echo -e "${GREEN}[+] Exported: ${csv_file%.csv}.kml${NC}"
+        else
+            echo -e "${RED}[!] Session not found: ${session}${NC}"
+        fi
+        ;;
+    export-csv)
+        session="${2:-latest}"
+        if [ "$session" = "latest" ]; then
+            latest=$(ls -t "${LOOT_DIR}"/*.csv 2>/dev/null | head -1)
+            if [ -n "$latest" ]; then
+                echo -e "${GREEN}[+] Latest CSV: ${latest}${NC}"
+            fi
+        fi
+        ;;
+    list)
+        list_sessions
+        ;;
+    replay)
+        session="${2:-}"
+        echo -e "${YELLOW}[!] KML replay requires a map application. Copy KML to another device.${NC}"
+        echo -e "${YELLOW}    Available sessions:${NC}"
+        list_sessions
+        ;;
+    upload)
+        session="${2:-}"
+        if [ -z "$session" ]; then
+            echo -e "${RED}[!] Usage: wardrive upload <session>${NC}"
+            list_sessions
+            exit 1
+        fi
+        upload_wigle "$session"
+        ;;
+    gps-status)
+        get_gps
+        ;;
+    *)
+        usage
+        ;;
+esac

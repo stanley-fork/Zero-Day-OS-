@@ -35,6 +35,11 @@ bindsym $mod+c exec --no-startup-id cam-snap
 bindsym $mod+i exec --no-startup-id $term -e bash -c "sudo ir-scan; bash"
 bindsym $mod+a exec --no-startup-id $term -e bash -c "opencode; bash"
 bindsym $mod+d exec --no-startup-id $term -e bash -c "dongle-setup status; bash"
+bindsym $mod+g exec --no-startup-id $term -e bash -c "doom-play; bash"
+bindsym $mod+r exec --no-startup-id $term -e bash -c "retro-play; bash"
+bindsym $mod+y exec --no-startup-id $term -e "yt search"
+bindsym $mod+l exec --no-startup-id device-lock lock
+bindsym $mod+u exec --no-startup-id $term -e "webui"
 
 bindsym $mod+1 workspace 1
 bindsym $mod+2 workspace 2

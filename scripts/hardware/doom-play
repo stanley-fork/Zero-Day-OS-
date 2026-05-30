@@ -1,0 +1,173 @@
+#!/bin/bash
+# /usr/local/bin/doom-play
+# DOOM launcher for ZERO-DAY OS
+# Runs Chocolate DOOM / DOOM (shareware) on Cardputer Zero
+# Optimized for 320x170 LCD and 46-key keyboard
+
+DOOM_DIR="/opt/cardputer/doom"
+DOOM_WAD_DIR="/opt/cardputer/doom/wads"
+SHAREWARE_URL="https://www.doomworld.com/idgames/id/software/doom/doom_shareware_191"
+
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+check_deps() {
+    if ! command -v chocolate-doom &>/dev/null && ! command -v prboom &>/dev/null && ! command -v doom &>/dev/null; then
+        echo -e "${RED}[!] No DOOM engine found.${NC}"
+        echo -e "${YELLOW}    Install: apt install chocolate-doom${NC}"
+        return 1
+    fi
+}
+
+check_wads() {
+    if [ ! -f "${DOOM_WAD_DIR}/doom1.wad" ] && [ ! -f "${DOOM_WAD_DIR}/DOOM1.WAD" ] && \
+       [ ! -f "${DOOM_WAD_DIR}/doom.wad" ] && [ ! -f "${DOOM_WAD_DIR}/DOOM.WAD" ]; then
+        echo -e "${YELLOW}[!] No DOOM WAD files found.${NC}"
+        echo -e "${CYAN}[*] WAD search paths:${NC}"
+        echo "    ${DOOM_WAD_DIR}/"
+        echo "    ${DOOM_DIR}/"
+        echo ""
+        echo -e "${CYAN}[*] Place WAD files in:${NC} ${DOOM_WAD_DIR}/"
+        echo -e "${YELLOW}[i] Supported WADs:${NC}"
+        echo "    doom1.wad   - DOOM Shareware (free)"
+        echo "    doom.wad    - DOOM Registered"
+        echo "    doom2.wad   - DOOM II: Hell on Earth"
+        echo "    plutonia.wad - The Plutonia Experiment"
+        echo "    tnt.wad     - TNT: Evilution"
+        echo "    freedoom1.wad - FreeDOOM Phase 1 (free)"
+        echo "    freedoom2.wad - FreeDOOM Phase 2 (free)"
+        echo ""
+        echo -e "${CYAN}Run 'doom-download-shareware' to get the free shareware WAD${NC}"
+        return 1
+    fi
+    return 0
+}
+
+launch_doom() {
+    check_deps || return 1
+
+    local wad="$1"
+    local iwad=""
+
+    # Determine which engine to use
+    local engine=""
+    if command -v chocolate-doom &>/dev/null; then
+        engine="chocolate-doom"
+    elif command -v prboom &>/dev/null; then
+        engine="prboom"
+    elif command -v doom &>/dev/null; then
+        engine="doom"
+    fi
+
+    # Find WAD
+    if [ -n "$wad" ]; then
+        iwad="-iwad ${DOOM_WAD_DIR}/${wad}"
+    else
+        # Auto-detect
+        if [ -f "${DOOM_WAD_DIR}/doom2.wad" ] || [ -f "${DOOM_WAD_DIR}/DOOM2.WAD" ]; then
+            iwad="-iwad ${DOOM_WAD_DIR}/doom2.wad"
+        elif [ -f "${DOOM_WAD_DIR}/doom.wad" ] || [ -f "${DOOM_WAD_DIR}/DOOM.WAD" ]; then
+            iwad="-iwad ${DOOM_WAD_DIR}/doom.wad"
+        elif [ -f "${DOOM_WAD_DIR}/doom1.wad" ] || [ -f "${DOOM_WAD_DIR}/DOOM1.WAD" ]; then
+            iwad="-iwad ${DOOM_WAD_DIR}/doom1.wad"
+        elif [ -f "${DOOM_WAD_DIR}/freedoom1.wad" ]; then
+            iwad="-iwad ${DOOM_WAD_DIR}/freedoom1.wad"
+        elif [ -f "${DOOM_WAD_DIR}/freedoom2.wad" ]; then
+            iwad="-iwad ${DOOM_WAD_DIR}/freedoom2.wad"
+        fi
+    fi
+
+    # Resolution config for Cardputer Zero
+    local resolution=""
+    if [ "$ZERODAY_DISPLAY" = "hdmi" ]; then
+        resolution="-fullscreen"
+    else
+        # 320x170 LCD — perfect for DOOM's native 320x200!
+        resolution="-1 -2"  # Scale to fit small screen
+    fi
+
+    echo -e "${CYAN}╔══════════════════════════════╗${NC}"
+    echo -e "${CYAN}║       R I P  A N D  T E A R  ║${NC}"
+    echo -e "${CYAN}╚══════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${GREEN}[*] Engine: ${engine}${NC}"
+    echo -e "${GREEN}[*] WAD: ${iwad}${NC}"
+    echo ""
+    echo -e "${YELLOW}[i] Controls on 46-key keyboard:${NC}"
+    echo "    W/A/S/D or Arrows = Move"
+    echo "    Space = Use/Open"
+    echo "    Ctrl/LeftShift = Fire"
+    echo "    Tab = Map"
+    echo "    1-7 = Select weapon"
+    echo "    Esc = Menu"
+    echo ""
+
+    cd "$DOOM_DIR" || true
+    "${engine}" ${iwad} ${resolution} 2>/dev/null
+}
+
+download_shareware() {
+    echo -e "${CYAN}[*] Downloading DOOM Shareware WAD...${NC}"
+    mkdir -p "${DOOM_WAD_DIR}"
+
+    # Try to install FreeDOOM as a completely free alternative first
+    if apt list --installed 2>/dev/null | grep -q freedoom; then
+        if [ -f "/usr/share/games/doom/freedoom1.wad" ]; then
+            cp /usr/share/games/doom/freedoom1.wad "${DOOM_WAD_DIR}/"
+            echo -e "${GREEN}[*] FreeDOOM Phase 1 WAD installed${NC}"
+        fi
+        if [ -f "/usr/share/games/doom/freedoom2.wad" ]; then
+            cp /usr/share/games/doom/freedoom2.wad "${DOOM_WAD_DIR}/"
+            echo -e "${GREEN}[*] FreeDOOM Phase 2 WAD installed${NC}"
+        fi
+    fi
+
+    echo -e "${YELLOW}[i] For the original DOOM shareware, download manually:${NC}"
+    echo "    wget -O /tmp/doom19s.zip ${SHAREWARE_URL}"
+    echo "    unzip /tmp/doom19s.zip -d ${DOOM_WAD_DIR}"
+    echo ""
+    echo -e "${GREEN}[*] Or install FreeDOOM (completely free):${NC}"
+    echo "    apt install freedoom"
+}
+
+list_wads() {
+    echo -e "${CYAN}[*] Available WAD files:${NC}"
+    if [ -d "${DOOM_WAD_DIR}" ]; then
+        ls -1 "${DOOM_WAD_DIR}"/*.wad 2>/dev/null || echo -e "${YELLOW}    No WAD files found${NC}"
+    else
+        echo -e "${YELLOW}    WAD directory not created yet${NC}"
+    fi
+}
+
+# Main
+mkdir -p "${DOOM_DIR}" "${DOOM_WAD_DIR}"
+
+case "${1:-}" in
+    play|"")
+        shift
+        launch_doom "${1:-}"
+        ;;
+    shareware|download)
+        download_shareware
+        ;;
+    list)
+        list_wads
+        ;;
+    help|--help|-h)
+        echo -e "${CYAN}doom-play${NC} — DOOM Launcher for ZERO-DAY OS"
+        echo ""
+        echo "Usage: doom-play <command>"
+        echo ""
+        echo "Commands:"
+        echo "  play [wad]       Launch DOOM (auto-detect WAD)"
+        echo "  shareware        Download/setup DOOM shareware WAD"
+        echo "  list             List available WAD files"
+        echo ""
+        echo "WAD files go in: ${DOOM_WAD_DIR}/"
+        echo ""
+        echo "Set ZERODAY_DISPLAY=hdmi for HDMI fullscreen output."
+        ;;
+esac

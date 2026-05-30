@@ -1,0 +1,34 @@
+# Games and Entertainment for ZERO-DAY OS
+# - DOOM (chocolate-doom shareware)
+# - RetroArch + lightweight cores (NES, SNES, GB, GBA, Genesis)
+# - YouTube player (yt-dlp + ffplay/mpv)
+# - Wayland GUI compositor (cage) for primary display
+
+# Wayland compositor for GUI launcher (primary interface)
+cage
+
+# RetroArch + cores (lightweight retro gaming)
+retroarch
+libretro-snes9x
+libretro-gambatte
+libretro-mgba
+libretro-genesisplusgx
+libretro-beetle-vb
+
+# DOOM engine
+chocolate-doom
+
+# FreeDOOM WADs (completely free, no licensing issues)
+freedoom
+
+# YouTube/media
+yt-dlp
+
+# Minimal video player (better on Wayland than ffplay)
+mpv
+
+# Wayland alternative WM (optional, heavier than cage)
+sway
+
+# Foot terminal (Wayland-native, lighter than st under Wayland)
+foot

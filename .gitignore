@@ -184,3 +184,7 @@ node_modules/
 .npm/
 yarn.lock
 package-lock.json
+
+# Rust build target directories
+**/target/
+target/

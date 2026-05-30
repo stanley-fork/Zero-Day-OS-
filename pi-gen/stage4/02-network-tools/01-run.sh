@@ -5,7 +5,7 @@ set -euo pipefail
 BIN="${ROOTFS_DIR}/usr/local/bin"
 
 # Install network scripts
-for script in net-discover net-quickscan net-vulnscan quick-c2 doh-proxy tunnel-mgr iot-scan; do
+for script in net-discover net-quickscan net-vulnscan quick-c2 doh-proxy tunnel-mgr iot-scan ragnar-ctl exfil-dns ntlmrelayx arpspoof captive-portal wardrive device-classify threat-intel net-pivot ragnar-scan; do
     if [ -f "${PROJECT_ROOT}/scripts/network/${script}" ]; then
         cp "${PROJECT_ROOT}/scripts/network/${script}" "${BIN}/${script}"
         chmod +x "${BIN}/${script}"

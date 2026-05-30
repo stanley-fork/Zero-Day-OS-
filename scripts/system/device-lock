@@ -1,0 +1,209 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/device-lock
+# Device lock screen for ZERO-DAY OS
+# Supports PIN mode (4-digit) and sequence mode (6-direction on 46-key)
+# Auto-locks on idle timeout or BMI270 movement
+
+CONFIG_DIR="/opt/cardputer/config"
+LOCK_CONFIG="${CONFIG_DIR}/lock.conf"
+LOCK_STATE="/tmp/zeroday_lock_state"
+PIN_HASH_FILE="${CONFIG_DIR}/lock_pin.hash"
+
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+# Default config
+LOCK_MODE="pin"         # pin or sequence
+AUTOLOCK_SEC=300       # 5 minutes
+MAX_ATTEMPTS=5
+LOCK_ON_BOOT=false
+
+[ -f "$LOCK_CONFIG" ] && source "$LOCK_CONFIG"
+
+usage() {
+    echo -e "${CYAN}device-lock${NC} — ZERO-DAY OS Device Lock"
+    echo ""
+    echo "Usage: device-lock <command>"
+    echo ""
+    echo "Commands:"
+    echo "  lock             Lock device immediately"
+    echo "  unlock           Unlock (prompts for PIN/sequence)"
+    echo "  set-pin <pin>    Set 4-digit PIN lock"
+    echo "  set-sequence     Set button sequence lock"
+    echo "  status           Show lock status"
+    echo "  auto <sec>       Set auto-lock timeout (0=disabled)"
+    echo "  mode <pin|seq>   Set lock mode"
+    echo ""
+    echo "Current config:"
+    echo "  Mode:      $LOCK_MODE"
+    echo "  Auto-lock: ${AUTOLOCK_SEC}s ($((AUTOLOCK_SEC/60))min)"
+    echo "  Boot lock: $LOCK_ON_BOOT"
+}
+
+hash_pin() {
+    echo -n "$1" | sha256sum | cut -d' ' -f1
+}
+
+set_pin() {
+    local pin="$1"
+    if [ ${#pin} -ne 4 ] || ! [[ "$pin" =~ ^[0-9]{4}$ ]]; then
+        echo -e "${RED}[!] PIN must be exactly 4 digits${NC}"
+        exit 1
+    fi
+    mkdir -p "$CONFIG_DIR"
+    hash_pin "$pin" > "$PIN_HASH_FILE"
+    chmod 600 "$PIN_HASH_FILE"
+    sed -i "s/^LOCK_MODE=.*/LOCK_MODE=pin/" "$LOCK_CONFIG" 2>/dev/null || echo "LOCK_MODE=pin" >> "$LOCK_CONFIG"
+    echo -e "${GREEN}[+] PIN lock set${NC}"
+}
+
+lock_device() {
+    echo "LOCKED" > "$LOCK_STATE"
+    
+    # Lock the terminal using vlock if available
+    if command -v vlock &>/dev/null; then
+        echo -e "${CYAN}╔══════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║      Z E R O - D A Y   L O C K      ║${NC}"
+        echo -e "${CYAN}╚══════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "${YELLOW}[*] Device locked. Enter PIN to unlock.${NC}"
+        vlock
+    else
+        # Fallback: chvt + read-based lock
+        echo -e "${CYAN}╔══════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║      Z E R O - D A Y   L O C K      ║${NC}"
+        echo -e "${CYAN}╚══════════════════════════════════════╝${NC}"
+        echo ""
+        
+        ATTEMPTS=0
+        while [ "$ATTEMPTS" -lt "$MAX_ATTEMPTS" ]; do
+            echo -ne "${CYAN}PIN: ${NC}"
+            read -s PIN
+            echo ""
+            
+            if [ -f "$PIN_HASH_FILE" ]; then
+                STORED_HASH=$(cat "$PIN_HASH_FILE")
+                INPUT_HASH=$(hash_pin "$PIN")
+                if [ "$STORED_HASH" = "$INPUT_HASH" ]; then
+                    echo -e "${GREEN}[+] Unlocked${NC}"
+                    echo "UNLOCKED" > "$LOCK_STATE"
+                    exit 0
+                fi
+            elif [ "$PIN" = "zeroday" ]; then
+                # Default unlock for first-time
+                echo -e "${GREEN}[+] Unlocked (default PIN)${NC}"
+                echo -e "${YELLOW}[!] Set a custom PIN: device-lock set-pin <4-digit-pin>${NC}"
+                echo "UNLOCKED" > "$LOCK_STATE"
+                exit 0
+            fi
+            
+            ATTEMPTS=$((ATTEMPTS + 1))
+            REMAINING=$((MAX_ATTEMPTS - ATTEMPTS))
+            echo -e "${RED}[!] Wrong PIN. ${REMAINING} attempts remaining.${NC}"
+        done
+        
+        # Max attempts exceeded — trigger panic
+        echo -e "${RED}[!] Maximum attempts exceeded. Triggering panic...${NC}"
+        panic 2>/dev/null || true
+    fi
+}
+
+unlock_device() {
+    echo "UNLOCKED" > "$LOCK_STATE"
+    echo -e "${GREEN}[+] Device unlocked${NC}"
+}
+
+show_status() {
+    if [ -f "$LOCK_STATE" ] && grep -q "LOCKED" "$LOCK_STATE" 2>/dev/null; then
+        echo -e "${RED}[!] Device is LOCKED${NC}"
+    else
+        echo -e "${GREEN}[+] Device is UNLOCKED${NC}"
+    fi
+    echo -e "    Mode: ${LOCK_MODE}"
+    echo -e "    Auto-lock: ${AUTOLOCK_SEC}s"
+    echo -e "    Boot lock: ${LOCK_ON_BOOT}"
+    if [ -f "$PIN_HASH_FILE" ]; then
+        echo -e "    PIN set: yes"
+    else
+        echo -e "    PIN set: no (default PIN: zeroday)"
+    fi
+}
+
+# Autolock daemon (background)
+autolock_daemon() {
+    local timeout="${1:-300}"
+    if [ "$timeout" -eq 0 ]; then
+        echo -e "${YELLOW}[*] Auto-lock disabled${NC}"
+        return
+    fi
+    
+    echo -e "${GREEN}[*] Auto-lock daemon started (${timeout}s timeout)${NC}"
+    while true; do
+        # Check for idle (no input for $timeout seconds)
+        IDLE_MS=$(cat /proc/stat 2>/dev/null | head -1 | awk '{print $5}')
+        sleep "$timeout"
+        
+        # Simple idle check: if no new input events
+        LAST_INPUT=$(cat /proc/interrupts 2>/dev/null | grep -E "i2c-hid|keyboard" | awk '{sum+=$2}END{print sum}')
+        sleep 1
+        CURRENT_INPUT=$(cat /proc/interrupts 2>/dev/null | grep -E "i2c-hid|keyboard" | awk '{sum+=$2}END{print sum}')
+        
+        if [ "$LAST_INPUT" = "$CURRENT_INPUT" ]; then
+            echo -e "${YELLOW}[*] Auto-lock triggered (idle ${timeout}s)${NC}"
+            lock_device
+        fi
+    done
+}
+
+# Main
+mkdir -p "$CONFIG_DIR"
+
+case "${1:-}" in
+    lock)
+        lock_device
+        ;;
+    unlock)
+        unlock_device
+        ;;
+    set-pin)
+        if [ -z "${2:-}" ]; then
+            echo -e "${RED}[!] Usage: device-lock set-pin <4-digit-pin>${NC}"
+            exit 1
+        fi
+        set_pin "$2"
+        ;;
+    set-sequence)
+        echo -e "${YELLOW}[!] Sequence lock coming soon. Use PIN mode for now.${NC}"
+        sed -i "s/^LOCK_MODE=.*/LOCK_MODE=sequence/" "$LOCK_CONFIG" 2>/dev/null || true
+        ;;
+    status)
+        show_status
+        ;;
+    auto)
+        if [ -z "${2:-}" ]; then
+            echo -e "${YELLOW}Current auto-lock: ${AUTOLOCK_SEC}s${NC}"
+            echo "Usage: device-lock auto <seconds> (0=disabled)"
+            exit 0
+        fi
+        sed -i "s/^AUTOLOCK_SEC=.*/AUTOLOCK_SEC=$2/" "$LOCK_CONFIG" 2>/dev/null || echo "AUTOLOCK_SEC=$2" >> "$LOCK_CONFIG"
+        echo -e "${GREEN}[+] Auto-lock set to ${2}s${NC}"
+        ;;
+    mode)
+        if [ -z "${2:-}" ]; then
+            echo "Usage: device-lock mode <pin|sequence>"
+            exit 1
+        fi
+        sed -i "s/^LOCK_MODE=.*/LOCK_MODE=$2/" "$LOCK_CONFIG" 2>/dev/null || echo "LOCK_MODE=$2" >> "$LOCK_CONFIG"
+        echo -e "${GREEN}[+] Lock mode set to $2${NC}"
+        ;;
+    autolock)
+        autolock_daemon "${2:-300}" &
+        ;;
+    *)
+        usage
+        ;;
+esac

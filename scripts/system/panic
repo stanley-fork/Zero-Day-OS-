@@ -16,7 +16,9 @@ python3 perl ruby ir-replay ir-brute gatttool obexftp rfcomm
 cam-snap libcamera libcamera-still libcamera-vid
 rtl_power rtl_fm hackrf_transfer
 john hydra gobuster responder arpspoof dnsspoof ffplay
-wifi-survey-log doh-proxy mac-rotate quick-c2 tunnel-mgr"
+wifi-survey-log doh-proxy mac-rotate quick-c2 tunnel-mgr
+mpv yt-dlp retroarch chocolate-doom doom doom-play retro-play yt
+ragnar headlessRagnar"
 
 echo "[PANIC] Killing offensive processes..."
 for proc in $OFFENSIVE_PROCS; do
@@ -44,6 +46,6 @@ rfkill block all 2>/dev/null
 
 echo "[$TIMESTAMP] PANIC COMPLETE" >> "$PANIC_LOG"
 
-echo "ZERO-DAY OS v0.1 — Login:"
+echo "ZERO-DAY OS v4.2.2 — Login:"
 echo "================================"
 echo "Password: "

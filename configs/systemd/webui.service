@@ -1,0 +1,15 @@
+[Unit]
+Description=ZERO-DAY OS WebUI Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=ZERODAY_WEBUI_PORT=8443
+EnvironmentFile=-/etc/zeroday/webui.env
+ExecStart=/usr/local/bin/webui
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

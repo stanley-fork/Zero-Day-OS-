@@ -10,7 +10,7 @@ RUN dpkg --add-architecture arm64 && \
     apt-get -y update && \
     apt-get -y install --no-install-recommends \
         git vim parted \
-        quilt coreutils qemu-user-static debootstrap zerofree zip dosfstools e2fsprogs \
+        quilt coreutils qemu-user-static qemu-user debootstrap zerofree zip dosfstools e2fsprogs \
         libarchive-tools libcap2-bin rsync grep udev xz-utils curl xxd file kmod bc \
         binfmt-support ca-certificates fdisk pigz arch-test \
         debian-archive-keyring gnupg device-tree-compiler \
@@ -35,12 +35,20 @@ RUN touch /usr/share/keyrings/raspberrypi-archive-keyring.gpg && \
 
 ARG PROJECT_ROOT=.
 
-# Copy project root (scripts, overlays, kernel, tui) then pi-gen itself
+# Copy project root (scripts, overlays, kernel, tui, configs, compositor) then pi-gen itself
 # Docker context is the project root (parent of pi-gen/)
 COPY scripts/ /project/scripts/
 COPY overlays/ /project/overlays/
 COPY kernel/ /project/kernel/
 COPY tui/ /project/tui/
+COPY configs/ /project/configs/
+COPY compositor/ /project/compositor/
+COPY terminal/ /project/terminal/
 COPY pi-gen/ /pi-gen/
+
+RUN chmod +x /pi-gen/build.sh /pi-gen/build-docker.sh /pi-gen/postrun.sh && \
+    find /pi-gen -name "prerun.sh" -exec chmod +x {} \; && \
+    find /pi-gen -name "*-run.sh" -exec chmod +x {} \; && \
+    find /pi-gen -name "*-run-chroot.sh" -exec chmod +x {} \;
 
 VOLUME [ "/pi-gen/work", "/pi-gen/deploy" ]

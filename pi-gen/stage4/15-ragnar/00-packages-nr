@@ -1,0 +1,2 @@
+# ragnar-ctl is a custom script, installed by 01-run.sh
+# No apt packages needed — Python deps installed via pip in 01-run.sh

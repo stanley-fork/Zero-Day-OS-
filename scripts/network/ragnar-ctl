@@ -1,0 +1,261 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/ragnar-ctl
+# Ragnar autonomous network scanner — on-device controller
+# Vendors PierreGode/Ragnar as a headless Python service on port 8091
+# Usage: ragnar-ctl <command> [options]
+# Commands: start, stop, restart, status, url, scan, vuln, auto, manual, logs, install, update, help
+
+RAGNAR_DIR="/opt/cardputer/ragnar"
+RAGNAR_VENV="${RAGNAR_DIR}/venv"
+RAGNAR_CONF="${RAGNAR_DIR}/config"
+RAGNAR_DATA="${RAGNAR_DIR}/data"
+RAGNAR_PORT="${RAGNAR_PORT:-8091}"
+RAGNAR_PID="/tmp/ragnar.pid"
+RAGNAR_LOG="/opt/cardputer/loot/general/ragnar.log"
+
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+mkdir -p "$(dirname "$RAGNAR_LOG")"
+
+case "${1:-help}" in
+    start|--start|-s)
+        if [ -f "$RAGNAR_PID" ] && kill -0 "$(cat "$RAGNAR_PID")" 2>/dev/null; then
+            echo -e "${YELLOW}[!] Ragnar already running (PID: $(cat "$RAGNAR_PID"))${NC}"
+            echo -e "${CYAN}[*] Dashboard: $(ragnar-ctl url)${NC}"
+            exit 0
+        fi
+
+        if [ ! -d "$RAGNAR_DIR" ]; then
+            echo -e "${RED}[!] Ragnar not installed. Run: ragnar-ctl install${NC}"
+            exit 1
+        fi
+
+        if [ ! -d "$RAGNAR_VENV" ]; then
+            echo -e "${RED}[!] Python venv not found. Run: ragnar-ctl install${NC}"
+            exit 1
+        fi
+
+        echo -e "${CYAN}[*] Starting Ragnar headless scanner...${NC}"
+        echo -e "${CYAN}[*] Port: ${RAGNAR_PORT}${NC}"
+
+        source "$RAGNAR_VENV/bin/activate"
+        cd "$RAGNAR_DIR"
+
+        RAGNAR_PORT="$RAGNAR_PORT" python3 headlessRagnar.py >> "$RAGNAR_LOG" 2>&1 &
+        RAG_PID=$!
+        echo "$RAG_PID" > "$RAGNAR_PID"
+
+        sleep 3
+        if kill -0 "$RAG_PID" 2>/dev/null; then
+            LOCAL_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' | head -1 || echo "localhost")
+            echo -e "${GREEN}[+] Ragnar started (PID: $RAG_PID)${NC}"
+            echo -e "${GREEN}[+] Dashboard: http://${LOCAL_IP}:${RAGNAR_PORT}${NC}"
+        else
+            echo -e "${RED}[!] Ragnar failed to start. Check: $RAGNAR_LOG${NC}"
+            rm -f "$RAGNAR_PID"
+            exit 1
+        fi
+        ;;
+
+    stop|--stop|-S)
+        if [ ! -f "$RAGNAR_PID" ]; then
+            echo -e "${YELLOW}[!] Ragnar not running${NC}"
+            exit 0
+        fi
+        PID=$(cat "$RAGNAR_PID")
+        if kill -0 "$PID" 2>/dev/null; then
+            kill "$PID" 2>/dev/null
+            sleep 2
+            if kill -0 "$PID" 2>/dev/null; then
+                kill -9 "$PID" 2>/dev/null
+            fi
+            echo -e "${GREEN}[+] Ragnar stopped (PID: $PID)${NC}"
+        else
+            echo -e "${YELLOW}[!] Ragnar already stopped${NC}"
+        fi
+        rm -f "$RAGNAR_PID"
+        ;;
+
+    restart|--restart|-r)
+        ragnar-ctl stop
+        sleep 2
+        ragnar-ctl start
+        ;;
+
+    status|--status|-st)
+        if [ -f "$RAGNAR_PID" ] && kill -0 "$(cat "$RAGNAR_PID")" 2>/dev/null; then
+            PID=$(cat "$RAGNAR_PID")
+            echo -e "${GREEN}[+] Ragnar running (PID: $PID)${NC}"
+            echo -e "${CYAN}[*] Dashboard: $(ragnar-ctl url)${NC}"
+
+            # Try to get status from API
+            STATUS=$(curl -s "http://127.0.0.1:${RAGNAR_PORT}/api/status" 2>/dev/null || echo "")
+            if [ -n "$STATUS" ]; then
+                echo -e "${CYAN}[*] API status: ${STATUS}${NC}" | head -5
+            fi
+        else
+            echo -e "${YELLOW}[-] Ragnar not running${NC}"
+            rm -f "$RAGNAR_PID" 2>/dev/null
+        fi
+        ;;
+
+    url|--url|-u)
+        LOCAL_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'src \K\S+' | head -1 || echo "localhost")
+        echo "http://${LOCAL_IP}:${RAGNAR_PORT}"
+        ;;
+
+    scan|--scan)
+        echo -e "${CYAN}[*] Triggering Ragnar network scan...${NC}"
+        RESP=$(curl -s -X POST "http://127.0.0.1:${RAGNAR_PORT}/api/scan/combined-network" 2>/dev/null || echo "failed")
+        if echo "$RESP" | grep -q "scan"; then
+            echo -e "${GREEN}[+] Scan triggered${NC}"
+        else
+            echo -e "${YELLOW}[!] Scan trigger failed. Is Ragnar running?${NC}"
+            echo -e "${YELLOW}[    Run: ragnar-ctl start${NC}"
+        fi
+        ;;
+
+    vuln|--vuln)
+        TARGET="${2:-}"
+        echo -e "${CYAN}[*] Triggering Ragnar vulnerability scan...${NC}"
+        if [ -n "$TARGET" ]; then
+            RESP=$(curl -s -X POST "http://127.0.0.1:${RAGNAR_PORT}/api/manual/scan/vulnerability" -d "target=${TARGET}" 2>/dev/null || echo "failed")
+        else
+            RESP=$(curl -s -X POST "http://127.0.0.1:${RAGNAR_PORT}/api/manual/scan/vulnerability" 2>/dev/null || echo "failed")
+        fi
+        echo -e "${GREEN}[+] Vulnerability scan triggered${NC}"
+        ;;
+
+    auto|--auto|-a)
+        echo -e "${CYAN}[*] Enabling Ragnar automation (orchestrator)...${NC}"
+        RESP=$(curl -s -X POST "http://127.0.0.1:${RAGNAR_PORT}/api/automation/orchestrator/start" 2>/dev/null || echo "failed")
+        echo -e "${GREEN}[+] Automation enabled${NC}"
+        echo -e "${CYAN}[*] Ragnar will auto-scan and auto-attack discovered targets${NC}"
+        ;;
+
+    manual|--manual|-m)
+        echo -e "${CYAN}[*] Disabling Ragnar automation (manual mode)...${NC}"
+        RESP=$(curl -s -X POST "http://127.0.0.1:${RAGNAR_PORT}/api/automation/orchestrator/stop" 2>/dev/null || echo "failed")
+        echo -e "${GREEN}[+] Manual mode enabled${NC}"
+        echo -e "${CYAN}[*] Use 'ragnar-ctl scan' and 'ragnar-ctl vuln' to trigger scans${NC}"
+        ;;
+
+    logs|--logs|-l)
+        LINES="${2:-30}"
+        if [ -f "$RAGNAR_LOG" ]; then
+            tail -n "$LINES" "$RAGNAR_LOG"
+        else
+            echo -e "${YELLOW}[!] No log file found: $RAGNAR_LOG${NC}"
+        fi
+        ;;
+
+    install|--install|-i)
+        echo -e "${CYAN}[*] Installing Ragnar port for ZERO-DAY OS...${NC}"
+        echo ""
+
+        if [ -d "$RAGNAR_DIR" ]; then
+            echo -e "${YELLOW}[!] Ragnar directory already exists: $RAGNAR_DIR${NC}"
+            echo -e "${YELLOW}[    Run 'ragnar-ctl update' to update, or remove and reinstall${NC}"
+            exit 0
+        fi
+
+        # Clone Ragnar
+        echo -e "${CYAN}[*] Cloning Ragnar repository...${NC}"
+        git clone https://github.com/PierreGode/Ragnar.git "$RAGNAR_DIR" 2>&1 || {
+            echo -e "${RED}[!] Failed to clone Ragnar${NC}"
+            exit 1
+        }
+
+        # Create venv
+        echo -e "${CYAN}[*] Creating Python virtual environment...${NC}"
+        python3 -m venv "$RAGNAR_VENV"
+        source "$RAGNAR_VENV/bin/activate"
+
+        # Install core dependencies (lightweight for 512MB RAM)
+        echo -e "${CYAN}[*] Installing Python dependencies...${NC}"
+        pip install --no-cache-dir \
+            flask flask-socketio flask-cors \
+            python-nmap netifaces psutil \
+            ping3 get-mac paramiko \
+            sqlalchemy rich \
+            cryptography 2>&1 || true
+
+        # Skip heavy deps: numpy, pandas, openai, Pillow, RPi.GPIO, spidev, etc.
+
+        # Create data directories
+        mkdir -p "$RAGNAR_DATA/intelligence" "$RAGNAR_DATA/logs" "$RAGNAR_DATA/loot"
+
+        # Configure for headless mode
+        export RAGNAR_PORT="$RAGNAR_PORT"
+        echo "RAGNAR_PORT=$RAGNAR_PORT" > "$RAGNAR_DIR/.env"
+
+        echo ""
+        echo -e "${GREEN}[+] Ragnar installed to $RAGNAR_DIR${NC}"
+        echo -e "${GREEN}[+] Dashboard will run on port $RAGNAR_PORT${NC}"
+        echo -e "${CYAN}[*] Start with: ragnar-ctl start${NC}"
+        echo -e "${CYAN}[*] Access dashboard: ragnar-ctl url${NC}"
+        ;;
+
+    update|--update|-U)
+        if [ ! -d "$RAGNAR_DIR" ]; then
+            echo -e "${RED}[!] Ragnar not installed. Run: ragnar-ctl install${NC}"
+            exit 1
+        fi
+        echo -e "${CYAN}[*] Updating Ragnar...${NC}"
+        cd "$RAGNAR_DIR"
+        git pull 2>&1 || true
+        if [ -d "$RAGNAR_VENV" ]; then
+            source "$RAGNAR_VENV/bin/activate"
+            pip install --no-cache-dir -r requirements.txt 2>&1 | tail -5 || true
+        fi
+        echo -e "${GREEN}[+] Ragnar updated${NC}"
+        ;;
+
+    help|--help|-h)
+        echo "Usage: ragnar-ctl <command> [options]"
+        echo ""
+        echo "Ragnar Autonomous Network Scanner — ZERO-DAY OS Controller"
+        echo "Headless web dashboard on http://<device-ip>:${RAGNAR_PORT}"
+        echo ""
+        echo "Commands:"
+        echo "  start           Start Ragnar headless scanner"
+        echo "  stop            Stop Ragnar"
+        echo "  restart         Restart Ragnar"
+        echo "  status          Show Ragnar status"
+        echo "  url             Show dashboard URL"
+        echo "  scan            Trigger network scan"
+        echo "  vuln [target]   Trigger vulnerability scan"
+        echo "  auto            Enable automation (orchestrator)"
+        echo "  manual          Disable automation (manual mode)"
+        echo "  logs [lines]    Show recent logs (default: 30)"
+        echo "  install         Install Ragnar from GitHub"
+        echo "  update          Update Ragnar (git pull)"
+        echo ""
+        echo "Environment:"
+        echo "  RAGNAR_DIR  = $RAGNAR_DIR"
+        echo "  RAGNAR_PORT = $RAGNAR_PORT"
+        echo "  RAGNAR_LOG  = $RAGNAR_LOG"
+        echo ""
+        echo "Ragnar runs as a separate headless Python service:"
+        echo "  - Web dashboard on port ${RAGNAR_PORT}"
+        echo "  - Autonomous scanning + vulnerability assessment"
+        echo "  - Network intel, threat fusion, device classification"
+        echo "  - Brute-force attacks (FTP, SSH, SMB, RDP, Telnet, SQL)"
+        echo "  - Data exfiltration from compromised services"
+        echo ""
+        echo "Source: https://github.com/PierreGode/Ragnar"
+        echo "Install deps: /opt/cardputer/scripts/install_ragnar_port.sh"
+        exit 0
+        ;;
+
+    *)
+        echo -e "${RED}[!] Unknown command: $1${NC}"
+        echo "Run: ragnar-ctl help"
+        exit 1
+        ;;
+esac

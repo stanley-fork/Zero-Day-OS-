@@ -1,0 +1,17 @@
+[Unit]
+Description=ZERO-DAY OS GUI Launcher (cage Wayland kiosk — fallback)
+After=zeroday-boot.service
+Wants=zeroday-boot.service
+Conflicts=zeroday-comp.service zeroday-tui.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/xdg/cage/config
+ExecStartPre=/bin/sh -c 'command -v cage >/dev/null 2>&1 || exit 1'
+ExecStart=/usr/bin/cage -- /usr/local/bin/cyber_launcher
+Restart=on-failure
+RestartSec=3
+OnFailure=zeroday-tui.service
+
+[Install]
+WantedBy=multi-user.target

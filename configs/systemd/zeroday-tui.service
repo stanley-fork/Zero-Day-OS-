@@ -1,0 +1,16 @@
+[Unit]
+Description=ZERO-DAY OS TUI Launcher (Xorg+i3 fallback)
+After=zeroday-boot.service
+Wants=zeroday-boot.service
+Conflicts=zeroday-gui.service
+
+[Service]
+Type=simple
+Environment=SDL_VIDEODRIVER=x11
+ExecStartPre=/bin/sh -c 'command -v startx >/dev/null 2>&1 || exit 1'
+ExecStart=/bin/sh -c 'startx /usr/bin/i3 -- :0 vt1'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

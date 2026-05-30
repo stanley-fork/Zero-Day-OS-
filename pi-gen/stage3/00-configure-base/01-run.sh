@@ -107,7 +107,7 @@ chmod 700 "${ROOTFS_DIR}/opt/cardputer/loot"
 
 # Write ZERO-DAY OS release info
 cat > "${ROOTFS_DIR}/etc/zeroday-release" << 'EOF'
-ZERO-DAY OS v0.1-pre
+ZERO-DAY OS v4.2.2
 Build: DATE_PLACEHOLDER
 Kernel: PLACEHOLDER
 Hardware: M5Stack Cardputer Zero (RP3A0 SoC, Pi Zero 2W die)

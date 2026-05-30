@@ -2,7 +2,7 @@
 
 **Complete guide to building, flashing, and operating ZERO-DAY OS on the M5Stack Cardputer Zero.**
 
-*Last updated: 2026-04-26*
+*Last updated: 2026-05-30*
 
 ---
 
@@ -14,28 +14,29 @@
 4. [First Boot](#4-first-boot)
 5. [Post-Install Setup](#5-post-install-setup)
 6. [The Keyboard](#6-the-keyboard)
-7. [The Flipper TUI](#7-the-flipper-tui)
-8. [WiFi Operations](#8-wifi-operations)
-9. [Dual-WiFi with RTL8821CU Dongle](#9-dual-wifi-with-rtl8821cu-dongle)
-10. [Network Reconnaissance](#10-network-reconnaissance)
-11. [Bluetooth Operations](#11-bluetooth-operations)
-12. [Infrared Hacking](#12-infrared-hacking)
-13. [Camera & OCR](#13-camera--ocr)
-14. [Reverse Shells & Payloads](#14-reverse-shells--payloads)
-15. [Sub-GHz Radio (CC1101)](#15-sub-ghz-radio-cc1101)
-16. [NFC / RFID (PN532)](#16-nfc--rfid-pn532)
-17. [M5MonsterC5 — ESP32C5 WiFi Attack Board](#17-m5monsterc5--esp32c5-wifi-attack-board)
-18. [JanOS Interactive Controller](#18-janos-interactive-controller)
-19. [Ragnar Reconnaissance](#19-ragnar-reconnaissance)
-20. [SDR & Hardware Tools](#20-sdr--hardware-tools)
-21. [Meshtastic Mesh Networking](#21-meshtastic-mesh-networking)
-22. [USB Gadget Mode](#22-usb-gadget-mode)
-23. [Power Management](#23-power-management)
-24. [Panic System](#24-panic-system)
-25. [OpenCode (Pocket IDE)](#25-opencode-pocket-ide)
-26. [Troubleshooting](#26-troubleshooting)
-27. [File System Layout](#27-file-system-layout)
-28. [Expansion Hardware Wiring](#28-expansion-hardware-wiring)
+7. [Display System](#7-display-system)
+8. [The Flipper TUI](#8-the-flipper-tui)
+9. [WiFi Operations](#9-wifi-operations)
+10. [Dual-WiFi with RTL8821CU Dongle](#10-dual-wifi-with-rtl8821cu-dongle)
+11. [Network Reconnaissance](#11-network-reconnaissance)
+12. [Bluetooth Operations](#12-bluetooth-operations)
+13. [Infrared Hacking](#13-infrared-hacking)
+14. [Camera & OCR](#14-camera--ocr)
+15. [Reverse Shells & Payloads](#15-reverse-shells--payloads)
+16. [Sub-GHz Radio (CC1101)](#16-sub-ghz-radio-cc1101)
+17. [NFC / RFID (PN532)](#17-nfc--rfid-pn532)
+18. [M5MonsterC5 — ESP32C5 WiFi Attack Board](#18-m5monsterc5--esp32c5-wifi-attack-board)
+19. [JanOS Interactive Controller](#19-janos-interactive-controller)
+20. [Ragnar Reconnaissance](#20-ragnar-reconnaissance)
+21. [SDR & Hardware Tools](#21-sdr--hardware-tools)
+22. [Meshtastic Mesh Networking](#22-meshtastic-mesh-networking)
+23. [USB Gadget Mode](#23-usb-gadget-mode)
+24. [Power Management](#24-power-management)
+25. [Panic System](#25-panic-system)
+26. [OpenCode (Pocket IDE)](#26-opencode-pocket-ide)
+27. [Troubleshooting](#27-troubleshooting)
+28. [File System Layout](#28-file-system-layout)
+29. [Expansion Hardware Wiring](#29-expansion-hardware-wiring)
 
 ---
 
@@ -78,38 +79,66 @@ sudo usermod -aG docker $USER
 # Log out and back in
 ```
 
-### Clone and build
+### Step 1: Cross-compile Rust components
+
+The compositor and terminal emulator must be built on the host before running pi-gen. They are pre-built aarch64 binaries copied into the rootfs during the image build.
 
 ```bash
-git clone <repo-url> cardzero
+cd cardzero
+
+# Install cross-rs (Docker-based cross-compilation)
+cargo install cross
+
+# Build the compositor (currently a stub launcher — DRM backend is WIP)
+cd compositor
+make deps          # Build custom cross-rs Docker image with Wayland/DRM libs
+make cross-build   # Cross-compile for aarch64
+# Output: compositor/target/aarch64-unknown-linux-gnu/release/zeroday-comp (~1.0MB)
+
+# Build the terminal emulator
+cd ../terminal
+make cross-build   # Cross-compile for aarch64
+# Output: terminal/target/aarch64-unknown-linux-gnu/release/zeroday-term (~1.2MB)
+```
+
+### Step 2: Build the OS image
+
+```bash
 cd cardzero/pi-gen
 
-# Start the build (~13 minutes on a modern machine)
+# Start the build (~25-30 minutes)
+chmod +x build-docker.sh build.sh
 ./build-docker.sh
 ```
 
-The build runs entirely inside a Docker container (`zeroday_pigen`). You'll see progress for each stage:
+The build runs entirely inside a Docker container (`zeroday_pigen`). It copies the pre-built Rust binaries into the rootfs and installs all Debian/Kali packages. You'll see progress for each stage:
 
 ```
 [18:30:00] Begin /pi-gen/stage0
 [18:30:45] End /pi-gen/stage0
 [18:30:45] Begin /pi-gen/stage1
 ...
-[18:49:51] End /pi-gen/stage5
-[18:49:51] Begin /pi-gen/export-image
-[18:50:19] End /pi-gen/export-image
+[18:48:16] Begin /pi-gen/stage3/07-zeroday-comp
+[18:48:16] [zeroday-comp] Found pre-built binary — installing
+[18:48:20] End /pi-gen/stage3/07-zeroday-comp
+[18:48:20] Begin /pi-gen/stage3/08-terminal-term
+[18:48:20] [zeroday-term] Found pre-built binary — installing
+[18:48:20] End /pi-gen/stage3/08-terminal-term
+...
+[18:55:33] End /pi-gen/stage5
+[18:55:33] Build finished
 ```
 
 ### Build output
 
 The compressed image lands at:
 ```
-pi-gen/deploy/2026-04-25-zeroday-os-.zip   (~129MB)
+pi-gen/deploy/2026-05-30-zeroday-os--full.zip   (~960MB)
 ```
 
-Inside is a raw 3.5GB SD card image with:
-- **Partition 1:** 508MB FAT32 (boot partition, marked bootable)
-- **Partition 2:** 3GB ext4 (root filesystem)
+Inside is a raw SD card image with:
+- **Partition 1:** FAT32 boot partition (kernel, overlays, config)
+- **Partition 2:** ext4 root filesystem (~3GB)
 
 ### Rebuilding
 
@@ -172,10 +201,13 @@ sudo dd if=pi-gen/work/zeroday-os/export-image/image-zeroday-os-.img \
 2. Connect power via micro-USB
 3. The system boots (~7 seconds):
    - Kernel loads with device tree overlays
-   - `zeroday-boot.service` runs (CPU governor, battery module)
+   - `zeroday-boot.service` runs (CPU governor, battery module, boot animation)
    - Auto-login as `root` on tty1
-   - Xorg + i3 start automatically
-   - The Flipper TUI (`cyber_launcher`) appears on the 1.9" LCD
+   - Display server starts via fallback chain:
+   - **zeroday-comp** (Rust Wayland compositor) tries first
+     - **cage** (Wayland kiosk) takes over if zeroday-comp fails
+     - **Xorg + i3** takes over if all Wayland fails
+   - The GUI launcher (`cyber_launcher`) appears on the 1.9" LCD
 
 4. Log in with: **root** / **zeroday**
 
@@ -242,18 +274,18 @@ mesh-chat install
 
 ## 6. The Keyboard
 
-The Cardputer Zero has a 46-key matrix keyboard. The `Fn` key (bottom-left) acts as `Alt` (`Mod1`) which drives all i3 window manager shortcuts and quick-launch commands.
+The Cardputer Zero has a 46-key matrix keyboard. The `Fn` key (bottom-left) acts as `Alt` (`Mod1`) which drives all i3 window manager shortcuts and quick-launch commands. When running under `zeroday-comp` (the default Wayland compositor), Fn-key shortcuts are handled at the compositor level — they work even if the GUI app crashes.
 
 ### Global shortcuts (work from anywhere)
 
-| Shortcut | Action |
-|---|---|
-| `Fn + Tab` | Toggle the Flipper TUI |
-| `Fn + P` | **PANIC** — kill all offensive processes, wipe traces |
-| `Fn + Space` | **STEALTH** — kill backlight (device looks off) |
-| `Fn + Return` | Open a terminal (st → tmux) |
-| `Fn + Q` | Close current window |
-| `Fn + O` | Open OpenCode editor |
+| Shortcut | Action | Level |
+|---|---|---|
+| `Fn + Tab` | Toggle the GUI launcher | Compositor |
+| `Fn + P` | **PANIC** — kill all offensive processes, wipe traces | Compositor |
+| `Fn + Space` | **STEALTH** — kill backlight (device looks off) | Compositor |
+| `Fn + Return` | Open a terminal (zeroday-term → tmux) | Compositor |
+| `Fn + Q` | Close current window | Compositor |
+| `Fn + O` | Open OpenCode editor | Compositor |
 
 ### Quick-launch shortcuts
 
@@ -268,7 +300,7 @@ The Cardputer Zero has a 46-key matrix keyboard. The `Fn` key (bottom-left) acts
 | `Fn + D` | Dongle status |
 | `Fn + A` | OpenCode ask (AI prompt) |
 
-### Terminal shortcuts (inside tmux)
+### Terminal shortcuts (zeroday-term / tmux)
 
 | Key | Action |
 |---|---|
@@ -281,7 +313,49 @@ The Cardputer Zero has a 46-key matrix keyboard. The `Fn` key (bottom-left) acts
 
 ---
 
-## 7. The Flipper TUI
+## 7. Display System
+
+ZERO-DAY OS uses a three-tier display system with automatic fallback:
+
+### Boot chain
+
+```
+zeroday-comp (Rust Wayland compositor, ~2MB)
+    └── OnFailure → cage (Wayland kiosk, ~3MB)
+            └── OnFailure → Xorg + i3 + stterm (~30MB)
+```
+
+**zeroday-comp** is the primary compositor. It's a custom Rust binary that runs `cyber_launcher` fullscreen and handles Fn-key compositor-level bindings (panic, stealth, quick-launch). If it's missing or crashes, systemd automatically starts cage. If cage fails, Xorg+i3 takes over.
+
+### Terminal: zeroday-term
+
+The default terminal under Wayland is **zeroday-term**, a custom Rust terminal emulator optimized for the 320x170 screen and 46-key keyboard:
+
+| Feature | Description |
+|---|---|
+| Status bar | Battery%, WiFi IP, CPU temp, load avg, clock — always visible at the top |
+| Fn-key shortcuts | Fn+Enter (new terminal), Fn+Esc (close), Fn+PgUp/PgDn (font size) |
+| Copy/paste | Ctrl+Shift+C / Ctrl+Shift+V |
+| Scrollback | Ctrl+Shift+Up/Down |
+| xterm-256color | Full color support for hacking tools |
+| ~1.2MB binary | Minimal RAM footprint, no desktop dependencies |
+
+Config file: `/etc/zeroday/term.env`
+
+If zeroday-term is unavailable, the system falls back to `stterm` (X11) or `foot` (Wayland).
+
+### HDMI output
+
+To enable fullscreen video/gaming on an external monitor:
+```bash
+export ZERODAY_DISPLAY=hdmi
+```
+
+This is checked by `yt`, `doom-play`, `retro-play`, and `mpv` to select output resolution.
+
+---
+
+## 8. The Flipper TUI
 
 The `cyber_launcher` is a Pygame (SDL2) GUI application that provides a Flipper Zero-style interface on the 1.9" LCD. It has three levels of navigation:
 
@@ -315,7 +389,7 @@ The `cyber_launcher` is a Pygame (SDL2) GUI application that provides a Flipper 
 
 ---
 
-## 8. WiFi Operations
+## 9. WiFi Operations
 
 ### Quick survey
 ```bash
@@ -386,7 +460,7 @@ Credentials are logged to `/opt/cardputer/loot/captive/captive_creds_*.log`.
 
 ---
 
-## 9. Dual-WiFi with RTL8821CU Dongle
+## 10. Dual-WiFi with RTL8821CU Dongle
 
 The RTL8821CU USB dongle on the USB-A port gives you a second WiFi radio (`wlan1`). This enables simultaneous attack and C2:
 
@@ -421,7 +495,7 @@ Any adapter with the **RTL8821CU** chipset:
 
 ---
 
-## 10. Network Reconnaissance
+## 11. Network Reconnaissance
 
 ### Discover all hosts on the network
 ```bash
@@ -521,7 +595,7 @@ sudo responder -I eth0
 
 ---
 
-## 11. Bluetooth Operations
+## 12. Bluetooth Operations
 
 ### Scan for devices
 ```bash
@@ -560,7 +634,7 @@ sudo ble-gatt AA:BB:CC:DD:EE:FF
 
 ---
 
-## 12. Infrared Hacking
+## 13. Infrared Hacking
 
 ### Capture a signal
 ```bash
@@ -585,7 +659,7 @@ sudo ir-replay /opt/cardputer/loot/ir/signal_20260425_*.raw
 
 ---
 
-## 13. Camera & OCR
+## 14. Camera & OCR
 
 ### Capture a still image
 ```bash
@@ -610,7 +684,7 @@ cam-ocr                     # Capture + Tesseract OCR → stdout + text file
 
 ---
 
-## 14. Reverse Shells & Payloads
+## 15. Reverse Shells & Payloads
 
 ### Encrypted C2 listener
 ```bash
@@ -665,7 +739,7 @@ searchsploit -x 12345              # Examine a specific exploit
 
 ---
 
-## 15. Sub-GHz Radio (CC1101)
+## 16. Sub-GHz Radio (CC1101)
 
 Requires a CC1101 module connected to the 2.54mm 14-pin expansion port (SPI).
 
@@ -694,7 +768,7 @@ sudo subghz-replay /opt/cardputer/loot/rf/signal_*.raw
 
 ---
 
-## 16. NFC / RFID (PN532)
+## 17. NFC / RFID (PN532)
 
 Requires a PN532 module connected to the Grove HY2.0-4P port (I2C mode, switches 1+2 ON).
 
@@ -721,7 +795,7 @@ sudo nfc-emulate AA:BB:CC:DD:EE:FF  # Emulate a specific UID
 
 ---
 
-## 17. M5MonsterC5 — ESP32C5 WiFi Attack Board
+## 18. M5MonsterC5 — ESP32C5 WiFi Attack Board
 
 The M5MonsterC5 is an ESP32C5-based add-on board running JanOS/projectZero firmware that connects to the Cardputer Zero via USB-A or UART serial. It provides dedicated WiFi attack hardware — offloading monitor-mode attacks from the Cardputer's own radios so `wlan0` stays online for C2 throughout the engagement.
 
@@ -893,7 +967,7 @@ monsterctl list_html        # List captive portal HTML pages on board
 
 ---
 
-## 18. JanOS Interactive Controller
+## 19. JanOS Interactive Controller
 
 The JanOS-app is a Python TUI that provides an interactive, menu-driven front-end for the M5MonsterC5 board. Instead of memorizing `monsterctl` subcommands, you get a full-screen interactive interface for scanning, attacking, wardriving, and browsing captured data.
 
@@ -973,7 +1047,7 @@ install-janos update
 
 ---
 
-## 19. Ragnar Reconnaissance
+## 20. Ragnar Reconnaissance
 
 [Ragnar](https://github.com/PierreGode/Ragnar) is a comprehensive Python-based network reconnaissance platform with AI-powered analysis, Nuclei scanning, ZAP integration, traffic analysis, and a web dashboard. It requires 2–8GB RAM — far too heavy for the Cardputer Zero's 512MB.
 
@@ -1072,7 +1146,7 @@ ragnar-scan eth0 full    # Lightweight recon, feed results to Ragnar
 
 ---
 
-## 20. SDR & Hardware Tools
+## 21. SDR & Hardware Tools
 
 Requires an RTL-SDR USB dongle connected to the USB-A port for SDR operations. GPIO probing works with built-in hardware.
 
@@ -1112,7 +1186,7 @@ sudo gpio-probe
 
 ---
 
-## 21. Meshtastic Mesh Networking
+## 22. Meshtastic Mesh Networking
 
 Requires a Meshtastic-compatible LoRa module connected to the Grove port (UART mode, switches 1+2 OFF).
 
@@ -1166,7 +1240,7 @@ mesh-setup exfil /path/to/file       # Exfiltrate file over mesh (chunked base64
 
 ---
 
-## 22. USB Gadget Mode
+## 23. USB Gadget Mode
 
 Plug the Cardputer Zero's USB-C port into a victim's computer. Flip the USB-C switch to "device" mode.
 
@@ -1205,7 +1279,7 @@ sudo usb-gadget-mode off
 
 ---
 
-## 23. Power Management
+## 24. Power Management
 
 ZERO-DAY OS has three power profiles tuned for the 1500mAh battery:
 
@@ -1244,7 +1318,7 @@ cardputer-wifi-toggle     # Toggle wlan0 on/off
 
 ---
 
-## 24. Panic System
+## 25. Panic System
 
 The panic system is designed for the moment you need to disappear — fast.
 
@@ -1283,7 +1357,7 @@ cat /opt/cardputer/panic.log
 
 ---
 
-## 25. OpenCode (Pocket IDE)
+## 26. OpenCode (Pocket IDE)
 
 OpenCode is an AI-assisted code editor you launch from the keyboard. It runs in a tmux split — editor on top, live console on the bottom.
 
@@ -1309,7 +1383,40 @@ Saves questions to `/opt/cardputer/workspace/` for later review. If the AI backe
 
 ---
 
-## 26. Troubleshooting
+## 27. Troubleshooting
+
+### Compositor not starting
+
+```bash
+# Check which display service is active:
+systemctl status zeroday-comp.service
+systemctl status zeroday-gui.service
+systemctl status zeroday-tui.service
+
+# Check compositor logs:
+journalctl -u zeroday-comp.service --no-pager -n 50
+
+# Manually start the compositor chain:
+zeroday-comp --client /usr/local/bin/cyber_launcher --no-cursor
+# Or fall back to cage:
+cage -- /usr/local/bin/cyber_launcher
+
+# If all Wayland fails, start X11 fallback:
+startx /usr/local/bin/cyber_launcher
+```
+
+### Terminal issues
+
+```bash
+# If zeroday-term crashes, stterm is the fallback:
+stterm -e bash
+
+# Check terminal config:
+cat /etc/zeroday/term.env
+
+# Terminal status bar not showing:
+ZERODAY_TERM_STATUS_BAR=1 zeroday-term
+```
 
 ### System won't boot
 - Verify the microSD is properly inserted
@@ -1385,7 +1492,7 @@ iptables -L -n
 
 ---
 
-## 27. File System Layout
+## 28. File System Layout
 
 ### System directories
 | Path | Purpose |
@@ -1398,6 +1505,11 @@ iptables -L -n
 | `/opt/cardputer/loot/` | All captured data, organized by type |
 | `/opt/cardputer/config/` | Tool configs, attack profiles, wordlists |
 | `/usr/local/bin/` | All one-key hacking scripts |
+| `/usr/local/bin/zeroday-comp` | Rust Wayland compositor (~1.0MB) |
+| `/usr/local/bin/zeroday-term` | Rust terminal emulator (~1.2MB) |
+| `/usr/local/bin/st` | Symlink → zeroday-term (compatibility) |
+| `/etc/zeroday/comp.env` | Compositor environment config |
+| `/etc/zeroday/term.env` | Terminal emulator config |
 | `/etc/i3/config` | i3 window manager keybindings |
 | `/etc/X11/xorg.conf` | X11 configuration for ST7789 LCD |
 | `/etc/zeroday-release` | Build info and version |
@@ -1415,7 +1527,7 @@ These are wiped on reboot — designed to reduce SD card writes:
 
 ---
 
-## 28. Expansion Hardware Wiring
+## 29. Expansion Hardware Wiring
 
 ### CC1101 Sub-GHz Transceiver (2.54mm 14-Pin ExtPort — SPI)
 
@@ -1473,7 +1585,7 @@ Switch settings: SW1=OFF, SW2=OFF (UART mode)
 ║                                                          ║
 ║  LOGIN:     root / zeroday                               ║
 ║  TUI:       Fn+Tab  or  cyber_launcher                   ║
-║  TERMINAL:  Fn+Return                                    ║
+║  TERMINAL:  Fn+Return (zeroday-term)                    ║
 ║  PANIC:     Fn+P                                         ║
 ║  STEALTH:   Fn+Space                                     ║
 ║  OPENCODE:  Fn+O                                         ║

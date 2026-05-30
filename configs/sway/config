@@ -1,0 +1,65 @@
+# /etc/sway/config — ZERO-DAY OS Sway Wayland Compositor
+# Lightweight Wayland compositor (alternative to cage kiosk)
+# Use sway when you need multiple windows / workspaces
+# cage is the default (kiosk, single app), sway is the fallback
+#
+# Install: apt install sway
+# Enable: systemctl enable zeroday-gui.service (uses cage)
+#         OR swap ExecStart to use sway instead
+
+# Output configuration for ST7789v3 LCD (320x170)
+output HDMI-A-1 disable
+output * bg /opt/cardputer/bg.png fill
+
+# Input configuration for 46-key keyboard
+input * {
+    xkb_layout us
+    tap enabled
+    natural_scroll disabled
+    dwt enabled
+}
+
+# No title bars, no gaps, fullscreen everything
+font pango:Terminus 8
+default_border none
+default_floating_border none
+hide_edge_borders both
+focus_follows_mouse no
+
+# Start GUI launcher fullscreen
+exec_always cyber_launcher
+
+# Keybindings (Fn = Alt/Mod1)
+set $mod Mod1
+set $term foot
+
+bindsym $mod+Tab exec cyber_launcher
+bindsym $mod+p exec panic
+bindsym $mod+space exec stealth-backlight-toggle
+bindsym $mod+Return exec $term
+bindsym $mod+q kill
+bindsym $mod+o exec opencode-session
+
+bindsym $mod+n exec $term -e sudo net-quickscan
+bindsym $mod+b exec $term -e sudo bt-scan
+bindsym $mod+s exec $term -e revshell-listen
+bindsym $mod+w exec cardputer-wifi-toggle
+bindsym $mod+c exec cam-snap
+bindsym $mod+i exec $term -e sudo ir-scan
+bindsym $mod+a exec $term -e opencode
+bindsym $mod+d exec $term -e dongle-setup status
+bindsym $mod+g exec $term -e doom-play
+bindsym $mod+r exec $term -e retro-play
+bindsym $mod+y exec $term -e "yt search"
+
+bindsym $mod+1 workspace 1
+bindsym $mod+2 workspace 2
+bindsym $mod+3 workspace 3
+bindsym $mod+4 workspace 4
+
+bindsym $mod+Shift+q exec swaynag -t warning -m "Press Shift+q to exit sway" -B "Exit" "swaymsg exit"
+
+# No bar — screen too small
+bar {
+    mode invisible
+}

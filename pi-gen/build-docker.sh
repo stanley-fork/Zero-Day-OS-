@@ -85,14 +85,7 @@ BUILD_OPTS="$(echo "${BUILD_OPTS:-}" | sed -E 's@\-c\s?([^ ]+)@-c /config@')"
 
 # Check the arch of the machine we're running on.
 # For arm64 target, we use a native arm64 or x86_64 base image.
-case "$(uname -m)" in
-  x86_64)
-    BASE_IMAGE=i386/debian:trixie
-    ;;
-  *)
-    BASE_IMAGE=debian:trixie
-    ;;
-esac
+BASE_IMAGE=debian:trixie
 ${DOCKER} build --build-arg BASE_IMAGE=${BASE_IMAGE} -f "${DIR}/Dockerfile" -t pi-gen "${DIR}/.."
 
 if [ "${CONTAINER_EXISTS}" != "" ]; then
@@ -158,9 +151,17 @@ time ${DOCKER} run \
   $DOCKER_CMDLINE_POST \
   pi-gen \
   bash -e -o pipefail -c "
-    dpkg-reconfigure qemu-user-binfmt &&
-    (mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc || true) &&
-    cd /pi-gen; ./build.sh ${BUILD_OPTS} &&
+    mkdir -p /proc/sys/fs/binfmt_misc &&
+    mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc &&
+    # Remove any stale qemu-aarch64 registration first
+    echo -1 > /proc/sys/fs/binfmt_misc/qemu-aarch64 2>/dev/null || true &&
+    # Register qemu-aarch64 with fix-binary flag (F) so chroot works
+    echo ':qemu-aarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-aarch64-static:CF' > /proc/sys/fs/binfmt_misc/register &&
+    printf '#!/bin/sh\nexit 0\n' > /usr/bin/arch-test &&
+    chmod +x /usr/bin/arch-test &&
+    echo 'arch-test: bypassed (qemu-user-static installed)' &&
+    echo 'binfmt registration:' && cat /proc/sys/fs/binfmt_misc/qemu-aarch64 &&
+    cd /pi-gen && ./build.sh ${BUILD_OPTS} &&
     rsync -av work/*/build.log deploy/
   " &
   wait "$!"

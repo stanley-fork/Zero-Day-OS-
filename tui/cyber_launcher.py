@@ -62,6 +62,9 @@ CATEGORIES = [
     {"name": "PAYLD",     "key": "PAYLD",    "color": (255, 200, 50)},  # Gold
     {"name": "RADIO",     "key": "RADIO",    "color": (180, 50, 255)},  # Purple
     {"name": "MEDIA",     "key": "MEDIA",    "color": (50, 255, 100)},  # Green
+    {"name": "YT",        "key": "YT",       "color": (255, 0, 0)},    # YouTube Red
+    {"name": "GAMES",     "key": "GAMES",    "color": (180, 80, 255)},  # Gaming Purple
+    {"name": "RETRO",     "key": "RETRO",    "color": (255, 165, 0)},  # Retro Orange
     {"name": "SHELL",     "key": "SHELL",    "color": (255, 75, 75)},   # Red
     {"name": "SYS",       "key": "SYS",      "color": (150, 160, 170)}, # Grey-Blue
     {"name": "OPENCODE",  "key": "OPENCODE", "color": (255, 255, 0)},   # Yellow
@@ -103,13 +106,18 @@ TOOLS = {
         {"name": "Vuln Scan",         "desc": "Nmap vuln + nikto + whatweb",     "cmd": "sudo net-vulnscan",                 "need_root": True,  "args": ["TARGET"]},
         {"name": "Full Scan",         "desc": "All 65535 ports + scripts",       "cmd": "net-quickscan",                     "need_root": False, "args": ["TARGET"], "extra": "full"},
         {"name": "IoT Scan",          "desc": "IoT protocol discovery",           "cmd": "iot-scan",                          "need_root": False, "args": ["TARGET"]},
-        {"name": "Gobuster",          "desc": "Directory/DNS brute-forcer",       "cmd": "gobuster",                          "need_root": False},
+        {"name": "Gobuster",          "desc": "Directory/DNS brute-forcer",       "cmd": "gobuster dir",                      "need_root": False, "args": ["TARGET"]},
         {"name": "Pivot (SOCKS)",     "desc": "SOCKS proxy via SSH",             "cmd": "tunnel-mgr socks",                   "need_root": False, "args": ["TARGET"]},
         {"name": "Pivot (Forward)",   "desc": "Local port forward",              "cmd": "tunnel-mgr forward",                 "need_root": False},
         {"name": "C2 Listener",       "desc": "Encrypted C2 shell (socat)",      "cmd": "quick-c2 listen",                   "need_root": False, "args": ["PORT"]},
         {"name": "C2 Payloads",       "desc": "Generate shell one-liners",       "cmd": "quick-c2 payload",                  "need_root": False},
         {"name": "DoH Proxy",         "desc": "DNS-over-HTTPS tunnel",            "cmd": "doh-proxy start",                    "need_root": True},
-        {"name": "ARP Spoof",         "desc": "MITM via arp spoofing",            "cmd": "sudo arpspoof",                      "need_root": True,  "args": ["TARGET"]},
+        {"name": "ARP Spoof",         "desc": "MITM via arp spoofing",            "cmd": "sudo arpspoof start",                "need_root": True,  "args": ["TARGET", "GATEWAY"]},
+        {"name": "Wardrive",           "desc": "GPS-tagged WiFi scanning + KML", "cmd": "wardrive start wlan0",              "need_root": False},
+        {"name": "Captive Portal",    "desc": "Rogue AP + credential harvesting", "cmd": "sudo captive-portal start",          "need_root": True,  "args": ["AP_IFACE", "INET_IFACE", "ESSID"]},
+        {"name": "DNS Exfil",         "desc": "Exfiltrate data via DNS tunnel",    "cmd": "exfil-dns",                         "need_root": True},
+        {"name": "ICMP Tunnel",       "desc": "Covert C2 via ICMP",              "cmd": "tunnel-mgr icmp",                    "need_root": True},
+        {"name": "NTLM Relay",        "desc": "NTLM authentication relay attack", "cmd": "ntlmrelayx",                        "need_root": True},
     ],
     "BT": [
         {"name": "Scan Devices",      "desc": "BLE + Classic discovery",         "cmd": "sudo bt-scan",                      "need_root": True},
@@ -118,7 +126,11 @@ TOOLS = {
         {"name": "L2Ping Flood",      "desc": "L2CAP ping flood (DoS)",          "cmd": "sudo bt-attack l2ping_flood",       "need_root": True,  "args": ["MAC"]},
         {"name": "RFCOMM Scan",       "desc": "Scan RFCOMM channels",            "cmd": "sudo bt-attack rfcomm_scan",        "need_root": True,  "args": ["MAC"]},
         {"name": "GATT Enumerate",    "desc": "BLE services + handles",          "cmd": "sudo ble-gatt",                     "need_root": True,  "args": ["MAC"]},
-        {"name": "Bettercap",         "desc": "MITM + BLE attack framework",     "cmd": "sudo bettercap",                    "need_root": True},
+        {"name": "Bettercap",         "desc": "MITM + BLE attack framework",     "cmd": "sudo bettercap mitm",                 "need_root": True,  "args": ["IFACE"]},
+        {"name": "BLE Spam Samsung",   "desc": "Wall of Flippers: Samsung TV",    "cmd": "sudo ble-spam samsung_tv",           "need_root": True},
+        {"name": "BLE Spam Swift",    "desc": "Wall of Flippers: Swift Pair",     "cmd": "sudo ble-spam swift_pair",           "need_root": True},
+        {"name": "BLE Spam AirPods",  "desc": "Wall of Flippers: AirPods",        "cmd": "sudo ble-spam air_pod",              "need_root": True},
+        {"name": "BLE Spam All",       "desc": "Wall of Flippers: cycle all",      "cmd": "sudo ble-spam all",                  "need_root": True},
     ],
     "IR": [
         {"name": "Scan IR Signal",    "desc": "Capture remote control signals",  "cmd": "sudo ir-scan",                      "need_root": True},
@@ -135,11 +147,14 @@ TOOLS = {
         {"name": "C2 Listener",       "desc": "Encrypted C2 shell (socat)",      "cmd": "quick-c2 listen",                   "need_root": False, "args": ["PORT"]},
         {"name": "C2 Payloads",       "desc": "Generate shell one-liners",       "cmd": "quick-c2 payload",                  "need_root": False},
         {"name": "Stabilize Shell",   "desc": "PTY/TTY upgrade cheatsheet",      "cmd": "revshell-stabilize",                "need_root": False},
-        {"name": "Crack Hashes",      "desc": "John the Ripper password cracker", "cmd": "john",                              "need_root": False},
-        {"name": "Brute Force Creds", "desc": "Hydra online credential cracker", "cmd": "hydra",                             "need_root": False},
+        {"name": "Crack Hashes",      "desc": "John the Ripper password cracker", "cmd": "john hash",                          "need_root": False, "args": ["HASHFILE"]},
+        {"name": "Brute Force Creds", "desc": "Hydra online credential cracker", "cmd": "hydra ssh",                           "need_root": False, "args": ["TARGET"]},
         {"name": "USB Ducky Mode",    "desc": "Switch USB-C to HID keyboard",    "cmd": "sudo usb-gadget-mode hid",          "need_root": True},
         {"name": "USB Mass Storage",  "desc": "Switch USB-C to flash drive",     "cmd": "sudo usb-gadget-mode mass",         "need_root": True},
         {"name": "USB Network",       "desc": "Switch USB-C to network adapter", "cmd": "sudo usb-gadget-mode ncm",          "need_root": True},
+        {"name": "Ragnar Scan",       "desc": "Autonomous network scanner (web)", "cmd": "ragnar-ctl start",                  "need_root": False},
+        {"name": "Ragnar Status",     "desc": "Scanner status + dashboard URL",  "cmd": "ragnar-ctl status",                "need_root": False},
+        {"name": "Ragnar Vuln",       "desc": "Trigger vulnerability scan",     "cmd": "ragnar-ctl vuln",                   "need_root": False},
     ],
     "RADIO": [
         {"name": "Wi-Fi Walkie Talkie", "desc": "Local Push-To-Talk Radio",      "cmd": "WALKIE_TALKIE",                     "need_root": False},
@@ -155,6 +170,31 @@ TOOLS = {
         {"name": "Local Music",       "desc": "Play MP3s from /opt/cardputer",   "cmd": "MEDIA_PLAYER:MUSIC",                "need_root": False},
         {"name": "Stop Playback",     "desc": "Kill audio background process",   "cmd": "killall ffplay",                    "need_root": False},
     ],
+    "YT": [
+        {"name": "Search YouTube",    "desc": "Search and play YouTube videos",   "cmd": "yt search",                         "need_root": False},
+        {"name": "Play Video",        "desc": "Play YouTube video by URL/ID",     "cmd": "yt play",                           "need_root": False, "args": ["URL_OR_ID"]},
+        {"name": "Play Audio Only",   "desc": "YouTube audio only (saves battery)","cmd": "yt audio",                          "need_root": False, "args": ["URL_OR_ID"]},
+        {"name": "Download Video",   "desc": "Download video to SD card",        "cmd": "yt download",                       "need_root": False, "args": ["URL_OR_ID"]},
+        {"name": "Download Audio",   "desc": "Download audio (MP3/OPUS)",         "cmd": "yt download-audio",                "need_root": False, "args": ["URL_OR_ID"]},
+        {"name": "Trending",          "desc": "Browse trending videos",           "cmd": "yt trending",                       "need_root": False},
+        {"name": "Play History",      "desc": "Show recently played videos",     "cmd": "yt history",                       "need_root": False},
+    ],
+    "GAMES": [
+        {"name": "Play DOOM",         "desc": "Launch DOOM (shareware/free)",    "cmd": "doom-play play",                     "need_root": False},
+        {"name": "DOOM Shareware",    "desc": "Download DOOM shareware WAD",      "cmd": "doom-play shareware",                "need_root": False},
+        {"name": "List WADs",          "desc": "List installed DOOM WAD files",    "cmd": "doom-play list",                    "need_root": False},
+    ],
+    "RETRO": [
+        {"name": "Retro Game Picker",  "desc": "Interactive retro game selector",  "cmd": "retro-play",                         "need_root": False},
+        {"name": "NES",                "desc": "Nintendo Entertainment System",    "cmd": "retro-play nes",                    "need_root": False, "args": ["ROM"]},
+        {"name": "SNES",               "desc": "Super Nintendo",                   "cmd": "retro-play snes",                   "need_root": False, "args": ["ROM"]},
+        {"name": "Game Boy",           "desc": "Nintendo Game Boy",                "cmd": "retro-play gb",                     "need_root": False, "args": ["ROM"]},
+        {"name": "GBA",                "desc": "Game Boy Advance",                 "cmd": "retro-play gba",                    "need_root": False, "args": ["ROM"]},
+        {"name": "Genesis",            "desc": "Sega Genesis / Mega Drive",        "cmd": "retro-play genesis",                "need_root": False, "args": ["ROM"]},
+        {"name": "List ROMs",          "desc": "List available game ROMs",         "cmd": "retro-play list",                    "need_root": False},
+        {"name": "Check Cores",        "desc": "Check installed emulator cores",   "cmd": "retro-play cores",                  "need_root": False},
+        {"name": "Setup RetroArch",    "desc": "Configure RetroArch for LCD",     "cmd": "retro-play setup",                  "need_root": True},
+    ],
     "SHELL": [
         {"name": "Quick Terminal",    "desc": "Open bash shell",                 "cmd": "bash",                              "need_root": False},
         {"name": "Root Terminal",     "desc": "Open root shell",                 "cmd": "sudo bash",                         "need_root": True},
@@ -168,10 +208,13 @@ TOOLS = {
         {"name": "Dongle Status",     "desc": "RTL8821CU dongle manager",        "cmd": "dongle-setup status",               "need_root": False},
         {"name": "MAC Rotate",        "desc": "Randomize MAC address",           "cmd": "sudo mac-rotate wlan0",             "need_root": True},
         {"name": "Performance Mode",  "desc": "1GHz quad, all radios on",        "cmd": "sudo power-mode performance",       "need_root": True},
-        {"name": "Balanced Mode",     "desc": "800MHz dual, WiFi only",          "cmd": "sudo power-mode balanced",          "need_root": True},
-        {"name": "Stealth Mode",      "desc": "600MHz single, radios off",       "cmd": "sudo power-mode stealth",           "need_root": True},
+        {"name": "Balanced Mode",     "desc": "800MHz dual, WiFi only",          "cmd": "sudo power-mode balanced",           "need_root": True},
+        {"name": "Stealth Mode",      "desc": "600MHz single, radios off",       "cmd": "sudo power-mode stealth",            "need_root": True},
         {"name": "Loot Organize",     "desc": "Sort and compress captures",      "cmd": "loot-organize",                     "need_root": False},
         {"name": "DoH Proxy",         "desc": "DNS-over-HTTPS tunnel",            "cmd": "doh-proxy start",                    "need_root": True},
+        {"name": "Device Lock",       "desc": "Lock screen (PIN/sequence)",      "cmd": "device-lock lock",                  "need_root": False},
+        {"name": "WebUI Dashboard",   "desc": "Phone/laptop remote control",      "cmd": "webui",                             "need_root": False},
+        {"name": "Discord Exfil",     "desc": "Send loot/data to Discord",        "cmd": "exfil-discord status",              "need_root": False},
         {"name": "PANIC",             "desc": "Kill all + wipe + sanitize",      "cmd": "panic",                             "need_root": False},
         {"name": "System Info",       "desc": "Show OS + hardware info",         "cmd": "cat /etc/zeroday-release; uname -a; free -m; df -h /", "need_root": False},
     ],
@@ -250,6 +293,27 @@ def draw_icon(surface: pygame.Surface, category: str, x: int, y: int, size: int 
         # Musical note icon — simplified for 24px
         pygame.draw.line(surface, color, (x+8, y+4), (x+8, y+18), 2)
         pygame.draw.circle(surface, color, (x+6, y+18), 3, 2)
+        
+    elif category == "YT":
+        # YouTube play button icon
+        pygame.draw.rect(surface, color, (x+2, y+4, 20, 16), 2, border_radius=3)
+        pygame.draw.polygon(surface, color, [(x+9, y+8), (x+9, y+16), (x+17, y+12)])
+
+    elif category == "GAMES":
+        # DOOM-style demon face — simplified
+        pygame.draw.rect(surface, color, (x+4, y+4, 16, 16), 2)
+        pygame.draw.rect(surface, color, (x+7, y+7, 4, 3))
+        pygame.draw.rect(surface, color, (x+14, y+7, 4, 3))
+        pts = [(x+6, y+14), (x+10, y+18), (x+12, y+14), (x+16, y+18), (x+18, y+14)]
+        pygame.draw.lines(surface, color, False, pts, 2)
+
+    elif category == "RETRO":
+        # Gamepad / D-pad icon
+        pygame.draw.rect(surface, color, (x+3, y+7, 18, 10), 2, border_radius=4)
+        pygame.draw.line(surface, color, (x+8, y+4), (x+8, y+20), 2)
+        pygame.draw.line(surface, color, (x+3, y+12), (x+13, y+12), 2)
+        pygame.draw.circle(surface, color, (x+17, y+10), 2, 2)
+        pygame.draw.circle(surface, color, (x+19, y+14), 2, 2)
         
     elif category == "SHELL":
         pygame.draw.rect(surface, color, (x+2, y+4, 20, 16), 2)

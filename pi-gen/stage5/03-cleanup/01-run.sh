@@ -54,7 +54,7 @@ else
     cat > "${ROOTFS_DIR}/etc/motd" << 'MOTD'
 ╔══════════════════════════════════════════════════╗
 ║                                                  ║
-║   ZERO-DAY OS  v0.1-pre                         ║
+║   ZERO-DAY OS  v4.2.2                           ║
 ║   M5Stack Cardputer Zero (CM0)                  ║
 ║                                                  ║
 ║   WiFi: OFF  |  BT: OFF  |  Eth: DOWN           ║
