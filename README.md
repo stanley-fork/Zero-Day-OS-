@@ -6,7 +6,7 @@
 
 **The first penetration testing OS built for a credit-card-sized computer you can hold in one hand.**
 
-ZERO-DAY OS v4.3.0 turns the M5Stack Cardputer Zero — a quad-core ARM64 box with WiFi, BT, IR, a camera, a battery, and a built-in keyboard — into a pocketable offensive security weapon. Every byte of this distro is optimized for the constraints of 512MB RAM and a 1.9" screen. No desktop. No bloat. No compromises. Powered by a custom Rust Wayland compositor and terminal emulator, both built for the hardware.
+ZERO-DAY OS v4.3.0 turns the M5Stack Cardputer Zero — a quad-core ARM64 box with WiFi, BT, IR, a camera, a battery, and a built-in keyboard — into a pocketable offensive security weapon. Every byte of this distro is optimized for the constraints of 512MB RAM and a 1.9" screen. No desktop. No bloat. No compromises. Powered by a custom Rust Wayland compositor (Smithay 0.7) and terminal emulator, both built for the hardware.
 
 [![Release v4.3.0](https://img.shields.io/github/v/release/jayis1/Zero-Day-OS-?label=latest%20release)](https://github.com/jayis1/Zero-Day-OS-/releases/latest)
 
@@ -58,8 +58,8 @@ Device tree: [`cardputerzero-overlay.dts`](overlays/cardputerzero-overlay.dts) �
 
 | Constraint | Our Solution |
 |---|---|
-| **512MB RAM** | `musl` where possible, `dropbear` over `sshd`, no `postgres`, no heavy daemons. Metasploit excluded. `zeroday-comp`: ~2MB vs cage ~3MB vs sway ~15MB vs Xorg ~30MB |
-| **1.9" 320x170 display** | `zeroday-comp` — custom Rust Wayland compositor with Fn-key bindings, DRM/KMS dual-output (LCD + HDMI mirror) |
+| **512MB RAM** | `musl` where possible, `dropbear` over `sshd`, no `postgres`, no heavy daemons. Metasploit excluded. `zeroday-comp`: ~1.5MB (Smithay 0.7 Wayland compositor with full protocol support) vs cage ~3MB vs sway ~15MB vs Xorg ~30MB |
+| **1.9" 320x170 display** | `zeroday-comp` — Smithay 0.7 Rust Wayland compositor with XdgShell, seat (keyboard/pointer), server-side decorations, SHM buffers, dual DRM/KMS output (LCD control panel + HDMI content screen) |
 | **46-key matrix keyboard** | `Fn` Omni-Key system. Every tool is 2 keypresses from anywhere. Compositor-level key handling. |
 | **1500mAh battery** | Three power profiles (performance / balanced / stealth). `autosleep`. Radio toggle hotkeys. |
 | **No mouse, ever** | `i3` tiling WM backend. tmux splits. Arrow-key everything. |
@@ -96,13 +96,16 @@ Device tree: [`cardputerzero-overlay.dts`](overlays/cardputerzero-overlay.dts) �
  │   └─────────────────────────────────────────────────┘    │
  │                                                          │
  │   ┌─────────────────────────────────────────────────┐    │
- │   │   zeroday-comp (Rust Wayland compositor, ~2MB)   │    │
-│   │   · DRM/KMS dual-output → ST7789V LCD + HDMI-A-1 mirror  │    │
+ │   │   zeroday-comp (Rust Wayland compositor, Smithay 0.7, ~1.5MB)    │    │
+│   │   · CompositorHandler + XdgShellHandler + XdgDecorationHandler  │    │
+│   │   · SeatHandler (keyboard + pointer) + ShmHandler + BufferHandler│    │
+│   │   · DRM/KMS dual-output → LCD (control panel) + HDMI-A-1 (content) │    │
 │   │   · HDMI hotplug auto-detect (DRM uevent netlink)            │    │
 │   │   · Fn-key compositor bindings (panic/stealth/media)        │    │
-│   │   · Single-client kiosk for cyber_launcher                 │    │
+│   │   · Server-side decorations enforced (Mode::ServerSide)       │    │
+│   │   · New toplevels auto-activated, single-client kiosk for cyber_launcher│    │
 │   │   · Automatic backlight & power management                  │    │
-│   │   · SIGTERM → children, SIGUSR1 → HDMI reconfig, SIGUSR2 → rescan │
+│   │   · SIGTERM → children, SIGUSR1 → HDMI reconfig, SIGUSR2 → rescan │    │
  │   └─────────────────────────────────────────────────┘    │
  │                                                          │
  │   ┌───────────┐  ┌───────────┐  ┌───────────────────┐   │
@@ -359,13 +362,13 @@ Meshtastic can connect three ways:
 ### Jellyfin TV
 | Command | Description |
 |---|---|
-| `jellyfin-tv` | Interactive menu (auto-detects Jellyfin Desktop) |
+| `jellyfin-tv` | Interactive menu (auto-detects HDMI, dual-screen) |
 | `jellyfin-tv connect <url>` | Connect to Jellyfin server |
 | `jellyfin-tv cast` | Start cast receiver (mpv-shim) |
 | `jellyfin-tv play <url>` | Play URL directly (YouTube, etc.) |
 | `jellyfin-tv local` | Play local media files |
 | `jellyfin-tv off` | Stop all playback |
-| `jellyfinmediaplayer` | Full Qt5 desktop client (best on HDMI) |
+| `jellyfinmediaplayer` | Full Qt5 desktop client (HDMI Screen #2 content, LCD Screen #1 controls) |
 
 ### Gaming — DOOM
 | Command | Description |
@@ -526,22 +529,24 @@ AT6558 GNSS chip (GPS/BDS/GLONASS/GALILEO/QZSS) with AT3335 patch antenna. Conne
 
 ## Display System — zeroday-comp Compositor
 
-ZERO-DAY OS uses **zeroday-comp**, a custom Rust Wayland compositor purpose-built for the Cardputer Zero's 320x170 screen, 46-key keyboard, and 512MB RAM. It replaces cage as the primary display server with lower memory usage and native Fn-key compositor bindings. The companion **zeroday-term** terminal emulator provides an optimized terminal for the same hardware constraints.
+ZERO-DAY OS uses **zeroday-comp**, a custom Rust Wayland compositor built on **Smithay 0.7** purpose-built for the Cardputer Zero's 320x170 screen, 46-key keyboard, and 512MB RAM. It replaces cage as the primary display server with lower memory usage, native Wayland protocol support, and Fn-key compositor bindings. The companion **zeroday-term** terminal emulator provides an optimized terminal for the same hardware constraints.
 
 | Priority | Interface | Compositor | Terminal | RAM | Use Case |
 |---|---|---|---|---|---|
-| **Primary** | GUI Launcher (Pygame) | zeroday-comp (custom Wayland) | zeroday-term | ~2MB + ~1.2MB | Daily use, Fn-keys, big icons |
+| **Primary** | GUI Launcher (Pygame) | zeroday-comp (Smithay 0.7 Wayland) | zeroday-term | ~1.5MB + ~1.2MB | Daily use, Fn-keys, big icons |
 | **Fallback 1** | GUI Launcher (Pygame) | cage (Wayland kiosk) | foot/st | ~3MB | If zeroday-comp fails |
 | **Fallback 2** | TUI Launcher (Pygame) | Xorg + i3 + st | stterm | ~30MB | If all Wayland fails |
 
 ### zeroday-comp Features
-- **Single-client kiosk**: No window management overhead — runs `cyber_launcher` fullscreen
+- **Smithay 0.7 protocol support**: CompositorHandler, SeatHandler (keyboard + pointer), XdgShellHandler (with popup repositioning), XdgDecorationHandler (server-side decorations enforced), ShmHandler, BufferHandler — all trait implementations complete and compiling
 - **Native Fn-key bindings**: Fn+P (panic), Fn+Space (stealth/backlight), Fn+Tab (launcher), Fn+Q (kill), Fn+M (Jellyfin TV), plus all quick-launch combos — handled at the compositor level
-- **Dual-output DRM/KMS**: Renders to ST7789V LCD (320x170@30fps) and HDMI-A-1 (1920x1080@30fps) simultaneously in mirror mode
+- **Dual-output DRM/KMS**: Renders to ST7789V LCD (320x170, Screen #1 — control panel) and HDMI-A-1 (1920x1080@30fps, Screen #2 — content display). LCD shows the GUI launcher and control buttons; HDMI shows the content window (Jellyfin video, etc.). HDMI only activates when a monitor is connected.
 - **HDMI hotplug**: `hdmi.rs` thread monitors DRM uevent netlink + sysfs — adds/removes HDMI output on plug/unplug without restart. `99-hdmi-hotplug.rules` udev + `hdmi-hotplug-notify` sends SIGUSR1 to compositor
 - **USB hotplug**: `70-usb-input.rules` + `usb-input-notify` sends SIGUSR2 to compositor for keyboard/mouse rescan
 - **Signal handlers**: SIGTERM/SIGHUP → kill children and clean exit; SIGUSR1 → reconfigure HDMI output; SIGUSR2 → rescan input devices
-- **Sub-2MB RAM**: Written in Rust, stripped release binary (~1.0MB), no desktop shell protocol overhead
+- **Server-side decorations**: XdgDecorationHandler forces `Mode::ServerSide` — no client-side title bars on the tiny LCD
+- **New toplevel windows auto-activated**: XdgShellHandler sets `Activated` state on new toplevels
+- **~1.5MB stripped binary**: Rust, panic=abort, LTO, opt-level=z, no desktop shell overhead
 - **Automatic backlight control**: Fn+Space toggles LCD backlight for stealth mode
 - **Fallback chain**: If zeroday-comp crashes, systemd automatically starts cage; if cage fails, Xorg+i3 takes over
 
@@ -566,7 +571,7 @@ ZERO-DAY OS uses **zeroday-comp**, a custom Rust Wayland compositor purpose-buil
 
 If zeroday-comp and cage both fail to start, `zeroday-tui.service` automatically takes over with Xorg + i3 + stterm.
 
-**HDMI dual-output**: When an HDMI monitor is plugged in, `zeroday-comp` automatically mirrors output to 1920x1080@30fps while keeping the LCD active. This is handled by `hdmi.rs` (DRM uevent netlink monitoring) + `99-hdmi-hotplug.rules` udev rule. PulseAudio auto-switches audio to HDMI. All apps work on both screens simultaneously — no manual env var needed.
+**HDMI dual-screen**: When an HDMI monitor is plugged in, `zeroday-comp` activates a second screen at 1920x1080@30fps. The LCD (Screen #1) displays the GUI launcher and control buttons, while the HDMI (Screen #2) shows the content window — Jellyfin video, YouTube, DOOM, etc. This is handled by `hdmi.rs` (DRM uevent netlink monitoring) + `99-hdmi-hotplug.rules` udev rule. PulseAudio auto-switches audio to HDMI. When no HDMI monitor is connected, everything runs on the LCD only.
 
 ---
 
@@ -625,9 +630,9 @@ sudo systemctl enable --now docker
 # Install cross-rs (Docker-based cross-compilation)
 cargo install cross
 
-# Build compositor (dual-output Wayland compositor with HDMI hotplug)
+# Build compositor (Smithay 0.7 Wayland compositor with HDMI hotplug)
 cd compositor
-make deps          # Build custom cross-rs Docker image with Wayland/DRM libs
+make deps          # Build cross-rs Docker image with Wayland/DRM libs (Debian Trixie base)
 make cross-build   # Cross-compile for aarch64
 
 # Build terminal emulator
@@ -643,7 +648,7 @@ cd ../trail
 make cross-build   # Cross-compile zeroday-trail for aarch64
 
 # Binaries land in:
-#   compositor/target/aarch64-unknown-linux-gnu/release/zeroday-comp  (~1.0MB)
+#   compositor/target/aarch64-unknown-linux-gnu/release/zeroday-comp  (~1.5MB)
 #   terminal/target/aarch64-unknown-linux-gnu/release/zeroday-term     (~1.2MB)
 #   explorer/target/aarch64-unknown-linux-gnu/release/zeroday-fm      (~1.9MB)
 #   trail/target/aarch64-unknown-linux-gnu/release/zeroday-trail      (~1.1MB)
@@ -669,9 +674,9 @@ sudo dd if=zeroday-os.img of=/dev/sdX bs=4M status=progress conv=fsync
 To cross-compile `zeroday-comp` separately:
 ```bash
 cd compositor
-make deps          # Build cross-rs Docker image
+make deps          # Build cross-rs Docker image (Debian Trixie + arm64 Wayland/DRM libs)
 make cross-build   # Cross-compile for aarch64
-make strip         # Strip binary (~1.0MB)
+make strip         # Strip binary (~1.5MB)
 ```
 
 To cross-compile `zeroday-term` separately:
@@ -723,7 +728,7 @@ ZERO-DAY OS is a professional tool for **authorized security testing**. The pani
 - **M5Stack** — Cardputer Zero hardware and official DT overlays
 - **Raspberry Pi Foundation** — RP3A0 SoC and pi-gen build system
 - **Kali Linux** — Tool repositories
-- **Smithay** — Rust Wayland compositor library (zeroday-comp backend)
+- **Smithay** — Rust Wayland compositor framework v0.7 (zeroday-comp backend: CompositorHandler, SeatHandler, XdgShellHandler, XdgDecorationHandler, ShmHandler, BufferHandler)
 - **portable-pty** — Cross-platform PTY library (zeroday-term backend)
 - **vte-rs** — Terminal escape sequence parser (zeroday-term)
 - **OpenCode** — On-device AI-assisted code editor (v1.14.49)

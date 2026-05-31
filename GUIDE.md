@@ -81,7 +81,7 @@ sudo usermod -aG docker $USER
 
 ### Step 1: Cross-compile Rust components
 
-The compositor and terminal emulator must be built on the host before running pi-gen. They are pre-built aarch64 binaries copied into the rootfs during the image build.
+The compositor and terminal emulator must be built on the host before running pi-gen. They are pre-built aarch64 binaries copied into the rootfs during the image build. The compositor uses Smithay 0.7 Wayland compositor framework and requires a custom cross-rs Docker image with Wayland/DRM arm64 development libraries.
 
 ```bash
 cd cardzero
@@ -89,11 +89,11 @@ cd cardzero
 # Install cross-rs (Docker-based cross-compilation)
 cargo install cross
 
-# Build the compositor (dual-output Wayland compositor with HDMI hotplug)
+# Build the compositor (Smithay 0.7 Wayland compositor with dual-output HDMI hotplug)
 cd compositor
-make deps          # Build custom cross-rs Docker image with Wayland/DRM libs
+make deps          # Build cross-rs Docker image with Wayland/DRM libs (Debian Trixie base, glibc 2.41)
 make cross-build   # Cross-compile for aarch64
-# Output: compositor/target/aarch64-unknown-linux-gnu/release/zeroday-comp (~1.0MB)
+# Output: compositor/target/aarch64-unknown-linux-gnu/release/zeroday-comp (~1.5MB)
 
 # Build the terminal emulator
 cd ../terminal
@@ -340,7 +340,7 @@ zeroday-comp (Rust Wayland compositor, ~2MB)
             └── OnFailure → Xorg + i3 + stterm (~30MB)
 ```
 
-**zeroday-comp** is the primary compositor. It's a custom Rust binary that runs `cyber_launcher` fullscreen and handles Fn-key compositor-level bindings (panic, stealth, quick-launch). If it's missing or crashes, systemd automatically starts cage. If cage fails, Xorg+i3 takes over.
+**zeroday-comp** is the primary compositor. It's a custom Rust binary built on **Smithay 0.7** (the Rust Wayland compositor framework) that runs `cyber_launcher` fullscreen and handles Fn-key compositor-level bindings (panic, stealth, quick-launch). It implements all core Smithay 0.7 Wayland protocol traits — CompositorHandler, SeatHandler (keyboard + pointer), XdgShellHandler (with popup repositioning), XdgDecorationHandler (server-side decorations), ShmHandler, and BufferHandler — providing full Wayland protocol support at ~1.5MB. If it's missing or crashes, systemd automatically starts cage. If cage fails, Xorg+i3 takes over.
 
 ### Terminal: zeroday-term
 
@@ -361,22 +361,22 @@ If zeroday-term is unavailable, the system falls back to `stterm` (X11) or `foot
 
 ### HDMI output
 
-The Cardputer Zero supports **dual-output** via HDMI — the LCD and HDMI display simultaneously mirror the same content. When an HDMI monitor is connected, `zeroday-comp` automatically detects it and outputs at 1920x1080@30fps.
+The Cardputer Zero supports **dual-screen** via HDMI — the LCD and HDMI function as two separate screens. The LCD (Screen #1) shows the GUI launcher and control buttons; the HDMI (Screen #2) shows the content window — Jellyfin video, YouTube, games, etc. When an HDMI monitor is connected, `zeroday-comp` automatically detects it and creates a second output at 1920x1080@30fps.
 
 **Automatic hotplug (default):** The `99-hdmi-hotplug.rules` udev rule and `hdmi-hotplug-notify` script monitor HDMI cable events. When HDMI is plugged in:
-- `zeroday-comp` receives SIGUSR1 and adds HDMI-A-1 output
+- `zeroday-comp` receives SIGUSR1 and creates HDMI-A-1 as Screen #2 (content display)
 - PulseAudio switches audio output to HDMI
 - `ZERODAY_HDMI=1` and `ZERODAY_DISPLAY=hdmi` are set for child processes
 
-When HDMI is unplugged, the HDMI output is removed and audio switches back to speakers.
+When HDMI is unplugged, the HDMI output is removed, content moves back to LCD, and audio switches back to speakers.
 
 **Manual override:**
 ```bash
-export ZERODAY_DISPLAY=hdmi    # Force HDMI output
-export ZERODAY_DISPLAY=lcd     # Force LCD-only output
+export ZERODAY_DISPLAY=hdmi    # Force content to HDMI output
+export ZERODAY_DISPLAY=lcd     # Force content to LCD-only output
 ```
 
-This is checked by `yt`, `doom-play`, `retro-play`, `jellyfin-tv`, and `mpv` to select output resolution.
+This is checked by `yt`, `doom-play`, `retro-play`, `jellyfin-tv`, and `mpv` to select output resolution. When HDMI is connected, content apps (Jellyfin, YouTube, DOOM, retro games) render on the HDMI screen while the LCD shows the GUI launcher and control buttons.
 
 **USB-A keyboard:** Plugging a USB keyboard into the USB-A port is auto-detected by `70-usb-input.rules` + `usb-input-notify` which sends SIGUSR2 to the compositor for input device rescan.
 
@@ -384,7 +384,29 @@ This is checked by `yt`, `doom-play`, `retro-play`, `jellyfin-tv`, and `mpv` to 
 
 ## 7b. Jellyfin TV — Media Box Mode
 
-Press **Fn+M** from anywhere to launch the Jellyfin TV menu. When an HDMI monitor is connected, it becomes a full TV media box streaming from your Jellyfin server at 1080P.
+Press **Fn+M** from anywhere to launch the Jellyfin TV menu. When an HDMI monitor is connected, the Cardputer Zero becomes a dual-screen media box: **LCD shows control buttons** (the GUI launcher / menu navigation), while **HDMI shows the content** (Jellyfin video at 1080P).
+
+### Dual-Screen Layout
+
+```
+┌───────────────┐    ┌─────────────────────────────────┐
+│  LCD 320x170  │    │    HDMI 1920x1080                │
+│  Screen #1    │    │    Screen #2                     │
+│               │    │                                   │
+│  ┌─────────┐  │    │  ┌─────────────────────────────┐│
+│  │  GUI     │  │    │  │                              ││
+│  │  Launcher│  │    │  │   Jellyfin Media Player      ││
+│  │  / Menu  │  │    │  │   (video content)            ││
+│  │  Controls│  │    │  │                              ││
+│  └─────────┘  │    │  │                              ││
+│               │    │  └─────────────────────────────┘│
+└───────────────┘    └─────────────────────────────────┘
+  (Cardputer)              (External Monitor)
+```
+
+- **LCD (Screen #1)**: Always shows the GUI launcher, menu navigation, playback controls
+- **HDMI (Screen #2)**: Video content window — only active when a monitor is connected
+- **No HDMI?** Everything runs on LCD in audio-only or scaled-down mode
 
 ### Quick Start
 
@@ -415,7 +437,7 @@ jellyfin-tv cast               # Start mpv-shim cast receiver
 
 ### HDMI Auto-Detect
 
-When HDMI is plugged in, `jellyfin-tv` automatically uses fullscreen 1080P with hardware video decoding. On LCD-only mode, it plays audio-only (saving battery). The `ZERODAY_DISPLAY` and `ZERODAY_HDMI` environment variables control this automatically.
+When HDMI is plugged in, `jellyfin-tv` automatically renders video on the HDMI screen (Screen #2) at 1080P with hardware video decoding, while the LCD (Screen #1) continues showing the GUI launcher and playback controls. On LCD-only mode (no HDMI), it plays audio-only (saving battery). The `ZERODAY_DISPLAY` and `ZERODAY_HDMI` environment variables control this automatically.
 
 ---
 
@@ -619,8 +641,8 @@ The Cardputer Zero's 1.9" internal LCD (320x170) can be supplemented with extern
 ### HDMI
 
 ```bash
-ext-display hdmi on              # Enable HDMI output
-ext-display hdmi mirror          # Mirror internal LCD
+ext-display hdmi on              # Enable HDMI output (Screen #2 for content)
+ext-display hdmi mirror          # LCD + HDMI dual-screen (LCD=controls, HDMI=content)
 ext-display hdmi extend          # Extend desktop (right)
 ext-display hdmi extend-left     # Extend desktop (left)
 ext-display hdmi resolution 720p # Set resolution

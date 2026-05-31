@@ -1,3 +1,4 @@
+mod comp;
 mod hdmi;
 mod input;
 mod panic_handler;
@@ -40,47 +41,30 @@ fn main() {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     }
 
-    log::info!("zeroday-comp starting (development build)");
-    log::info!("  LCD: {} @ {}fps", args.resolution, args.fps);
-    log::info!("  HDMI: 1920x1080 @ {}fps (hotplug auto-detect)", args.hdmi_fps);
+    log::info!("zeroday-comp v4.3.0 starting");
+    log::info!("  Screen #1 (LCD): {} @ {}fps — controls, GUI launcher", args.resolution, args.fps);
+    log::info!("  Screen #2 (HDMI): 1920x1080 @ {}fps — content display (hotplug auto-detect)", args.hdmi_fps);
     log::info!("  client: {}", args.client);
 
     panic_handler::install();
 
     let _hotplug = hdmi::hdmi_hotplug_thread();
     let hdmi_on = hdmi::is_hdmi_connected();
-    log::info!("HDMI status: {}", if hdmi_on { "CONNECTED" } else { "disconnected" });
+    log::info!("HDMI status: {}", if hdmi_on { "CONNECTED — Screen #2 active" } else { "disconnected — LCD-only mode" });
 
-    log::warn!("zeroday-comp is a work-in-progress — falling back to cage for now");
-    log::info!("Starting client directly with Wayland environment variables...");
+    let app_data = comp::AppData {
+        client_cmd: args.client,
+        client_args: args.client_args,
+        no_cursor: args.no_cursor,
+        target_fps: args.fps,
+        drm_path: args.drm_device,
+        hdmi_fps: args.hdmi_fps,
+        hdmi_auto: args.hdmi_auto,
+        input_handler: input::InputHandler::new(),
+    };
 
-    let cmd = &args.client;
-    let socket_name = std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "wayland-0".to_string());
-
-    let args_vec: Vec<&str> = args.client_args
-        .as_deref()
-        .map(|a| a.split_whitespace().collect())
-        .unwrap_or_default();
-
-    let hdmi_env = if hdmi_on { "1" } else { "0" };
-
-    log::info!("Executing: {} {:?}", cmd, args_vec);
-
-    let mut child = std::process::Command::new(cmd)
-        .args(&args_vec)
-        .env("WAYLAND_DISPLAY", &socket_name)
-        .env("SDL_VIDEODRIVER", "wayland")
-        .env("SDL_RENDER_DRIVER", "opengles2")
-        .env("PYGAME_HIDE_SUPPORT_PROMPT", "1")
-        .env("ZERODAY_HDMI", hdmi_env)
-        .env("ZERODAY_LCD_WIDTH", "320")
-        .env("ZERODAY_LCD_HEIGHT", "170")
-        .env("ZERODAY_HDMI_WIDTH", "1920")
-        .env("ZERODAY_HDMI_HEIGHT", "1080")
-        .env("ZERODAY_HDMI_FPS", args.hdmi_fps.to_string())
-        .spawn()
-        .expect("failed to start client");
-
-    let status = child.wait().expect("failed to wait for client");
-    log::info!("Client exited with status: {}", status);
+    if let Err(e) = comp::run(app_data) {
+        log::error!("zeroday-comp error: {:?}", e);
+        log::warn!("Falling back — cage or Xorg+i3 will take over via systemd OnFailure=");
+    }
 }

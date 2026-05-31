@@ -143,7 +143,7 @@ hdmi_mode=0x50
 # Default is hdmi_drive=2 (DVI, no audio) for stealth mode.
 
 # ── GPU memory ──
-# 32MB: enough for dual-output (LCD + HDMI mirror/extend) with Wayland
+# 32MB: enough for dual-screen (LCD control panel + HDMI content) with Wayland
 gpu_mem=32
 
 # ── Framebuffer ──

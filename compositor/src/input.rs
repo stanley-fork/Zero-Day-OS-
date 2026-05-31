@@ -51,7 +51,7 @@ mod keycodes {
     pub const U: u32 = 22;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct InputHandler {
     fn_held: bool,
     fn_keycode: u32,

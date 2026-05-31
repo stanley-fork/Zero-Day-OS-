@@ -26,16 +26,19 @@
 
 ```
 zeroday-os/
-├── compositor/                     # zeroday-comp — Rust Wayland compositor
+├── compositor/                     # zeroday-comp — Rust Wayland compositor (Smithay 0.7)
 │   ├── src/
 │   │   ├── main.rs                 #   Compositor entry point (--hdmi-fps, --hdmi-auto flags)
-│   │   ├── comp.rs                  #   Smithay dual-output compositor (LCD + HDMI mirror)
+│   │   ├── comp.rs                  #   Smithay 0.7 compositor state: CompositorHandler, SeatHandler,
+│   │   │                            #   XdgShellHandler, XdgDecorationHandler, ShmHandler, BufferHandler
+│   │   │                            #   Dual-output (LCD Screen #1 + HDMI Screen #2), ListeningSocket
+│   │   │                            #   Client spawning with ZERODAY_* env vars
 │   │   ├── hdmi.rs                  #   HDMI hotplug detection (DRM uevent netlink + sysfs)
 │   │   ├── input.rs                #   Fn-key compositor-level bindings (panic, stealth, media, quick-launch)
 │   │   └── panic_handler.rs        #   SIGTERM/SIGHUP/SIGUSR1/SIGUSR2 handlers
-│   ├── Cargo.toml                  #   Smithay 0.7 + minimal deps
-│   ├── Cross.toml                  #   cross-rs config (aarch64 target, PKG_CONFIG paths)
-│   ├── Cross.Dockerfile            #   Custom cross-rs image with arm64 Wayland/DRM dev libs
+│   ├── Cargo.toml                  #   Smithay 0.7 + minimal deps, panic=abort, LTO, opt-level=z
+│   ├── Cross.toml                  #   cross-rs config (aarch64 target, custom Docker image)
+│   ├── cross/Dockerfile            #   Debian Trixie cross-compilation image (glibc 2.41, arm64 Wayland/DRM libs)
 │   └── Makefile                    #   deps, cross-build, build-release, strip targets
 │
 ├── terminal/                        # zeroday-term — Rust terminal emulator
@@ -287,18 +290,20 @@ zeroday-os/
 │         │  │  └─ Start compositor chain          │             │
 │         │  └─────────────────────────────────────┘             │
 │         │                                                       │
-│  [4.0s] zeroday-comp (Rust Wayland compositor)                 │
+│  [4.0s] zeroday-comp (Rust Wayland compositor, Smithay 0.7)       │
 │         │  If zeroday-comp found: launches cyber_launcher     │
 │         │  If zeroday-comp NOT found: falls back to cage      │
-│         │  zeroday-comp → launches client fullscreen           │
-│         │  DRM/KMS direct rendering → ST7789 LCD              │
+│         │  zeroday-comp → XdgShell + Seat + SHM protocols → │
+│         │  creates Wayland socket (wayland-0) via ListeningSocket → │
+│         │  launches client fullscreen on LCD (Screen #1)     │
+│         │  DRM/KMS direct rendering → ST7789 LCD             │
 │         │  Fn-key compositor bindings active (panic, stealth)  │
 │         │  If zeroday-comp fails → OnFailure → cage            │
 │         │  If cage fails → OnFailure → Xorg+i3 (zeroday-tui)  │
 │         │                                                       │
 │  [5.0s] cyber_launcher (Pygame GUI)                           │
 │         │  Renders full-screen on ST7789v3                    │
-│         │  HDMI mirror: 1920x1080@30fps when plugged in     │
+│         │  HDMI Screen #2: 1920x1080@30fps content display (hotplug)     │
 │         │  Terminal: zeroday-term (Wayland) or st (X11)        │
 │         │  HDMI output: auto-detected via DRM uevent netlink │
 │         │                                                       │
@@ -314,13 +319,13 @@ zeroday-os/
 ```
 
 **Key boot decisions:**
-- **Wayland GUI primary.** Boot chain: `zeroday-comp` (Rust Wayland compositor, ~2MB) → `cage` (Wayland kiosk, ~3MB) → `Xorg+i3` (TUI fallback, ~30MB). The `zeroday-comp` compositor is tried first; if it fails, systemd `OnFailure=` automatically starts the next tier.
-- **zeroday-comp** is a dual-output Wayland compositor with HDMI hotplug support. It renders simultaneously to ST7789V LCD (320x170@30fps) and HDMI-A-1 (1920x1080@30fps, mirror mode). `hdmi.rs` monitors DRM uevent netlink for hotplug events and reconfigures outputs on plug/unplug. The boot chain gracefully falls back to cage then Xorg+i3.
+- **Wayland GUI primary.** Boot chain: `zeroday-comp` (Smithay 0.7 Rust Wayland compositor, ~1.5MB) → `cage` (Wayland kiosk, ~3MB) → `Xorg+i3` (TUI fallback, ~30MB). The `zeroday-comp` compositor implements full Smithay 0.7 Wayland protocol traits (CompositorHandler, SeatHandler, XdgShellHandler, XdgDecorationHandler, ShmHandler, BufferHandler) and creates a Wayland display via `ListeningSocket::bind("wayland-0")`. If it fails, systemd `OnFailure=` automatically starts the next tier.
+- **zeroday-comp** is a dual-screen Wayland compositor built on Smithay 0.7 with full protocol support. It implements CompositorHandler (surface commit, client state), SeatHandler (keyboard focus + pointer cursor), XdgShellHandler (toplevel windows with auto-activation, popups with grab and repositioning, toplevel/popup destroy), XdgDecorationHandler (enforces Mode::ServerSide — no client-side title bars on the tiny LCD), ShmHandler (shared memory buffers), and BufferHandler (buffer lifecycle). Screen #1 (LCD, 320x170) displays the GUI launcher and control buttons. Screen #2 (HDMI, 1920x1080@30fps) shows the content window — Jellyfin video, YouTube, DOOM, etc. HDMI only activates when a monitor is connected. `hdmi.rs` monitors DRM uevent netlink for hotplug events and adds/removes the HDMI output on plug/unplug. Outputs are created via `Output::new()` with `set_preferred()` and `change_current_state()`. Wayland socket is created via `ListeningSocket::bind("wayland-0")`. The boot chain gracefully falls back to cage then Xorg+i3.
 - **HDMI is hotplug-auto-detected.** `hdmi_force_hotplug=1` + `max_framebuffers=2` in config.txt enables dual-output. udev rule `99-hdmi-hotplug.rules` triggers `hdmi-hotplug-notify` which sends SIGUSR1 to zeroday-comp for output reconfiguration. PulseAudio auto-switches audio to HDMI when connected.
 - **zeroday-term** is the primary terminal under Wayland (installed as `/usr/local/bin/zeroday-term` with `st → zeroday-term` symlink). Under X11 fallback, `stterm` is used.
 - **Radios OFF at boot.** WiFi and Bluetooth are disabled by default. Activated only when you need them. Zero RF signature on power-up.
-- **GPU mem capped at 32MB.** Dual-output rendering (LCD + HDMI mirror) needs more GPU memory than single LCD. `gpu_mem=32` in config.txt.
-- **HDMI auto-detected via hotplug.** `hdmi_force_hotplug=1` + `max_framebuffers=2` enables dual-output. When HDMI is plugged in, zeroday-comp mirrors to 1920x1080@30fps. `ZERODAY_DISPLAY=hdmi` still works for manual override. udev handles pulseaudio audio switching.
+- **GPU mem capped at 32MB.** Dual-output rendering (LCD control panel + HDMI content screen) needs more GPU memory than single LCD. `gpu_mem=32` in config.txt.
+- **HDMI auto-detected via hotplug.** `hdmi_force_hotplug=1` + `max_framebuffers=2` enables dual-screen. When HDMI is plugged in, zeroday-comp creates a second output at 1920x1080@30fps — the LCD shows the control panel (GUI launcher, buttons), HDMI shows content (Jellyfin video, YouTube, games). `ZERODAY_DISPLAY=hdmi` forces content to HDMI only. udev handles pulseaudio audio switching.
 - **GUI launcher uses big icons.** 16 categories displayed as large, high-contrast icons optimized for the 1.9" screen. Full-color, full-icon grid — not a text list.
 
 ---
@@ -333,7 +338,7 @@ Every megabyte is accounted for:
 |---|---|---|
 | **Linux Kernel** | ~12 MB | Stripped config, no unused modules |
 | **systemd** | ~15 MB | Minimal units, no NetworkManager |
-| **zeroday-comp** | ~2 MB | Rust Wayland compositor (stub: launches client) |
+| **zeroday-comp** | ~1.5 MB | Rust Wayland compositor (Smithay 0.7: XdgShell, Seat, decorations, SHM) |
 | **zeroday-term** | ~1.2 MB | Rust terminal emulator (status bar, Fn-keys) |
 | **Pygame GUI** | ~25 MB | Python + pygame + SDL2 (big icons) |
 | **Bash + core utils** | ~10 MB | Busybox where possible |
@@ -566,8 +571,23 @@ apt install -y --no-install-recommends \
 #### 03-stage/07-zeroday-comp
 ```bash
 # zeroday-comp — Custom Rust Wayland compositor (PRIMARY display system)
+# Built on Smithay 0.7 Wayland compositor framework
 # Pre-built binary: compositor/target/aarch64-unknown-linux-gnu/release/zeroday-comp
-# ~1.0MB stripped, panic=abort, LTO, opt-level=z
+# ~1.5MB stripped, panic=abort, LTO, opt-level=z
+#
+# Smithay 0.7 trait implementations (all complete and compiling):
+#   CompositorHandler  — Wayland compositor protocol (surface commits, client state)
+#   SeatHandler         — Input seat (keyboard focus + pointer cursor)
+#   XdgShellHandler     — XDG shell (toplevel windows, popups, grabs, reposition)
+#   XdgDecorationHandler — Server-side decorations (Mode::ServerSide enforced)
+#   ShmHandler          — Shared memory buffers (client pixel data)
+#   BufferHandler       — Buffer lifecycle management
+#
+# Delegate macros: delegate_compositor!, delegate_seat!, delegate_shm!,
+#   delegate_xdg_shell!, delegate_xdg_decoration!
+#
+# Cross-compilation: cross-rs with custom Debian Trixie Docker image
+#   (glibc 2.41 for build scripts, arm64 Wayland/DRM/EGL/libinput dev libs)
 
 # Install the pre-built compositor binary
 install -m 755 "${COMP_BIN}" "${ROOTFS_DIR}/usr/local/bin/zeroday-comp"
@@ -598,7 +618,9 @@ apt install -y --no-install-recommends \
 # Systemd service: zeroday-comp.service (PRIMARY)
 #   After=zeroday-boot.service
 #   Conflicts=zeroday-gui.service zeroday-tui.service
-#   ExecStart=/usr/local/bin/zeroday-comp --client /usr/local/bin/cyber_launcher --no-cursor --hdmi-fps 30 --hdmi-auto
+# ExecStart=/usr/local/bin/zeroday-comp --client /usr/local/bin/cyber_launcher --no-cursor --hdmi-fps 30 --hdmi-auto
+#   LCD (Screen #1): GUI launcher with control buttons
+#   HDMI (Screen #2): Content window for Jellyfin, YouTube, etc. (activates on hotplug)
 #   OnFailure=zeroday-gui.service (falls back to cage)
 
 # zeroday-gui.service (cage, FALLBACK tier 1)
@@ -609,8 +631,9 @@ apt install -y --no-install-recommends \
 # Boot priority: zeroday-comp → cage (zeroday-gui) → Xorg+i3 (zeroday-tui)
 chroot "${ROOTFS_DIR}" systemctl enable zeroday-comp.service
 
-# Current status: dual-output compositor with HDMI hotplug (hdmi.rs + DRM uevent netlink)
-# Smithay 0.7 trait impls (SeatHandler, XdgShellHandler, etc.) are WIP
+# Current status: Smithay 0.7 Wayland compositor with full protocol trait implementations
+# (CompositorHandler, SeatHandler, XdgShellHandler, XdgDecorationHandler, ShmHandler, BufferHandler)
+# Cross-compiles for aarch64 (~1.5MB stripped binary)
 # Falls back to cage gracefully when binary missing or crashes
 ```
 
@@ -1956,7 +1979,7 @@ The `yt` command provides YouTube search, streaming, and download on the Cardput
 | Mode | Setting | Playback | RAM |
 |---|---|---|---|
 | **LCD only** | No HDMI connected (auto) | Audio-only via mpv `--no-video` | ~15MB |
-| **LCD + HDMI mirror** | HDMI plugged (auto-detected) | Fullscreen 1080P video via mpv on HDMI, LCD shows GUI | ~30MB |
+| **LCD + HDMI dual-screen** | HDMI plugged (auto-detected) | LCD=control panel, HDMI=content (1080P video) | ~30MB |
 | **Force HDMI** | `export ZERODAY_DISPLAY=hdmi` | Fullscreen video even without hotplug | ~30MB |
 
 ### Playback Quality
@@ -2160,7 +2183,7 @@ terminal/
 Language:    Python 3
 Framework:   Pygame (SDL2 backend)
 Renderer:    SDL2 → Wayland (DRM/KMS) primary, X11 fallback
-Screen Size: 320x170 (1.9" ST7789v3 LCD) + 1920x1080 (HDMI, mirror mode, hotplug auto-detected)
+Screen Size: 320x170 (1.9" ST7789v3 LCD, Screen #1: control panel) + 1920x1080 (HDMI, Screen #2: content display, hotplug auto-detected)
 
 File: /usr/local/bin/cyber_launcher
 ```
@@ -2522,7 +2545,7 @@ CONFIG_BRCMFMAC=y                     # WiFi driver
 CONFIG_NET_VENDOR_REALTEK=y           # RTL8152 (USB-Ethernet)
 
 # ─── Must Disable (save RAM/kernel size) ───
-CONFIG_DRM=y                          # DRM/KMS required for dual-output (LCD + HDMI mirror)
+CONFIG_DRM=y                          # DRM/KMS required for dual-screen (LCD control panel + HDMI content)
 CONFIG_SOUND_OSS_CORE=n               # No OSS audio
 CONFIG_FB_RPISENSEDISPLAY=n            # No sense hat display
 CONFIG_USB_PRINTER=n                  # No printer support
