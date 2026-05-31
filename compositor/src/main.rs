@@ -1,3 +1,4 @@
+mod hdmi;
 mod input;
 mod panic_handler;
 
@@ -24,6 +25,10 @@ struct Args {
     no_cursor: bool,
     #[arg(long)]
     verbose: bool,
+    #[arg(long, default_value = "30")]
+    hdmi_fps: u32,
+    #[arg(long, default_value = "true")]
+    hdmi_auto: bool,
 }
 
 fn main() {
@@ -36,11 +41,15 @@ fn main() {
     }
 
     log::info!("zeroday-comp starting (development build)");
-    log::info!("  resolution: {}", args.resolution);
+    log::info!("  LCD: {} @ {}fps", args.resolution, args.fps);
+    log::info!("  HDMI: 1920x1080 @ {}fps (hotplug auto-detect)", args.hdmi_fps);
     log::info!("  client: {}", args.client);
-    log::info!("  fps: {}", args.fps);
 
     panic_handler::install();
+
+    let _hotplug = hdmi::hdmi_hotplug_thread();
+    let hdmi_on = hdmi::is_hdmi_connected();
+    log::info!("HDMI status: {}", if hdmi_on { "CONNECTED" } else { "disconnected" });
 
     log::warn!("zeroday-comp is a work-in-progress — falling back to cage for now");
     log::info!("Starting client directly with Wayland environment variables...");
@@ -53,6 +62,8 @@ fn main() {
         .map(|a| a.split_whitespace().collect())
         .unwrap_or_default();
 
+    let hdmi_env = if hdmi_on { "1" } else { "0" };
+
     log::info!("Executing: {} {:?}", cmd, args_vec);
 
     let mut child = std::process::Command::new(cmd)
@@ -61,6 +72,12 @@ fn main() {
         .env("SDL_VIDEODRIVER", "wayland")
         .env("SDL_RENDER_DRIVER", "opengles2")
         .env("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+        .env("ZERODAY_HDMI", hdmi_env)
+        .env("ZERODAY_LCD_WIDTH", "320")
+        .env("ZERODAY_LCD_HEIGHT", "170")
+        .env("ZERODAY_HDMI_WIDTH", "1920")
+        .env("ZERODAY_HDMI_HEIGHT", "1080")
+        .env("ZERODAY_HDMI_FPS", args.hdmi_fps.to_string())
         .spawn()
         .expect("failed to start client");
 

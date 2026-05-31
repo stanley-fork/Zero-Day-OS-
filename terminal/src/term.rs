@@ -1,4 +1,4 @@
-use crate::fn_keys::{FnKeyHandler, FnAction};
+use crate::fn_keys::FnKeyHandler;
 use crate::render::Renderer;
 use crate::status_bar::StatusBar;
 use crate::pty::PtySession;

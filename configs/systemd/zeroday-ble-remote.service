@@ -1,0 +1,17 @@
+[Unit]
+Description=ZERO-DAY BLE Remote API (GATT Server)
+After=bluetooth.service dbus.service
+Wants=bluetooth.service
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/rfkill unblock bluetooth
+ExecStartPre=/bin/hciconfig hci0 up
+ExecStart=/usr/bin/python3 /opt/cardputer/ble-remote/gatt_server.py
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

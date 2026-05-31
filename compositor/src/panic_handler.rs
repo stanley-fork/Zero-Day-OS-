@@ -5,15 +5,23 @@ static SHUTDOWN_COUNT: AtomicUsize = AtomicUsize::new(0);
 pub fn install() {
     unsafe {
         let action_term = libc::sigaction {
-            sa_sigaction: handle_signal as usize,
+            sa_sigaction: handle_signal as *const () as usize,
             sa_flags: libc::SA_RESTART,
             sa_mask: std::mem::zeroed(),
             sa_restorer: None,
         };
         libc::sigaction(libc::SIGTERM, &action_term, std::ptr::null_mut());
         libc::sigaction(libc::SIGHUP, &action_term, std::ptr::null_mut());
+
+        let action_usr = libc::sigaction {
+            sa_sigaction: handle_usr as *const () as usize,
+            sa_flags: libc::SA_RESTART,
+            sa_mask: std::mem::zeroed(),
+            sa_restorer: None,
+        };
+        libc::sigaction(libc::SIGUSR2, &action_usr, std::ptr::null_mut());
     }
-    log::info!("Signal handlers installed (SIGTERM, SIGHUP)");
+    log::info!("Signal handlers installed (SIGTERM, SIGHUP, SIGUSR2=hotplug)");
 }
 
 extern "C" fn handle_signal(sig: libc::c_int, _info: *mut libc::siginfo_t, _ctx: *mut libc::c_void) {
@@ -32,4 +40,8 @@ extern "C" fn handle_signal(sig: libc::c_int, _info: *mut libc::siginfo_t, _ctx:
         .spawn();
 
     std::process::exit(0);
+}
+
+extern "C" fn handle_usr(_sig: libc::c_int, _info: *mut libc::siginfo_t, _ctx: *mut libc::c_void) {
+    log::info!("SIGUSR2: input/output hotplug event — rescan devices");
 }

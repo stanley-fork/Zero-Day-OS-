@@ -24,6 +24,7 @@ pub enum FnAction {
     Retro,
     Youtube,
     WebUI,
+    MediaBox,
 }
 
 mod keycodes {
@@ -46,6 +47,7 @@ mod keycodes {
     pub const G: u32 = 34;
     pub const R: u32 = 19;
     pub const Y: u32 = 21;
+    pub const M: u32 = 50;
     pub const U: u32 = 22;
 }
 
@@ -92,6 +94,7 @@ impl InputHandler {
             keycodes::R => Some(FnAction::Retro),
             keycodes::Y => Some(FnAction::Youtube),
             keycodes::U => Some(FnAction::WebUI),
+            keycodes::M => Some(FnAction::MediaBox),
             _ => None,
         };
 
@@ -134,6 +137,7 @@ impl InputHandler {
             FnAction::Retro => ("st", vec!["-e", "retro-play"]),
             FnAction::Youtube => ("st", vec!["-e", "yt", "search"]),
             FnAction::WebUI => ("webui", vec![]),
+            FnAction::MediaBox => ("jellyfin-tv", vec![]),
             FnAction::None => return,
         };
 
@@ -148,6 +152,16 @@ impl InputHandler {
 fn spawn_bg(program: &str, args: &[&str]) {
     let prog = program.to_string();
     let args_owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let hdmi = if std::path::Path::new("/sys/class/drm/card0-HDMI-A-1/status")
+        .exists()
+    {
+        match std::fs::read_to_string("/sys/class/drm/card0-HDMI-A-1/status") {
+            Ok(s) if s.trim() == "connected" => "1",
+            _ => "0",
+        }
+    } else {
+        "0"
+    };
     std::thread::spawn(move || {
         let mut cmd = Command::new(&prog);
         for arg in &args_owned {
@@ -155,7 +169,9 @@ fn spawn_bg(program: &str, args: &[&str]) {
         }
         cmd.env("WAYLAND_DISPLAY", "wayland-0")
             .env("SDL_VIDEODRIVER", "wayland")
-            .env("SDL_RENDER_DRIVER", "opengles2");
+            .env("SDL_RENDER_DRIVER", "opengles2")
+            .env("ZERODAY_HDMI", hdmi)
+            .env("ZERODAY_DISPLAY", if hdmi == "1" { "hdmi" } else { "lcd" });
         match cmd.spawn() {
             Ok(_) => log::debug!("Spawned {}", prog),
             Err(e) => log::warn!("Failed to spawn {}: {}", prog, e),

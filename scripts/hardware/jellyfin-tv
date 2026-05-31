@@ -1,0 +1,582 @@
+#!/bin/bash
+# /usr/local/bin/jellyfin-tv
+# ZERO-DAY OS — Jellyfin TV Media Box Mode
+# Streams media from a Jellyfin server to the HDMI output at 1080P
+#
+# Usage:
+#   jellyfin-tv                    # Interactive: server picker → browse → play
+#   jellyfin-tv connect <url>      # Connect to a Jellyfin server
+#   jellyfin-tv play <url>         # Play a media URL directly via mpv
+#   jellyfin-tv cast <url>         # Cast to Jellyfin client
+#   jellyfin-tv off                # Kill all media players
+#
+# When an HDMI monitor is detected, this script automatically configures
+# mpv for 1080P HDMI output. On LCD only, it plays audio-only mode.
+#
+# This is the "TV Media Box" feature — plug the Cardputer Zero into any
+# TV or monitor via HDMI, and it becomes a Jellyfin streaming client.
+
+set -euo pipefail
+
+JF_CONFIG="/opt/cardputer/config/jellyfin-tv"
+JF_SERVERS="${JF_CONFIG}/servers.conf"
+JF_LAST="${JF_CONFIG}/last_server"
+LOOT_DIR="/opt/cardputer/loot/media"
+
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+mkdir -p "${JF_CONFIG}" "${LOOT_DIR}"
+
+# ── Check if HDMI is connected ──
+is_hdmi() {
+    if [ -f /sys/class/drm/card0-HDMI-A-1/status ]; then
+        grep -q "connected" /sys/class/drm/card0-HDMI-A-1/status 2>/dev/null
+        return $?
+    fi
+    # Fallback: check env var
+    [ "$ZERODAY_DISPLAY" = "hdmi" ]
+}
+
+# ── Get the appropriate mpv command for the display ──
+get_mpv_cmd() {
+    if is_hdmi; then
+        echo "mpv --fs --no-border --force-window=no --vo=gpu --gpu-context=wayland --hwdec=auto --audio-device=auto --volume=80"
+    else
+        echo "mpv --no-video --force-window=no --audio-device=auto --volume=80"
+    fi
+}
+
+# ── Get mpv command for local files (HDMI fullscreen or LCD audio-only) ──
+get_local_mpv_cmd() {
+    if is_hdmi; then
+        echo "mpv --fs --no-border --vo=gpu --gpu-context=wayland --hwdec=auto --volume=80"
+    else
+        echo "mpv --no-video --volume=80"
+    fi
+}
+
+# ── Check which Jellyfin client is available ──
+# jellyfin-media-player (Qt5 desktop app) is preferred over mpv-shim
+HAS_JMP=false
+HAS_MPV_SHIM=false
+if command -v jellyfinmediaplayer &>/dev/null; then
+    HAS_JMP=true
+elif command -v jellyfin-mpv-shim &>/dev/null; then
+    HAS_MPV_SHIM=true
+fi
+
+# ── Check dependencies ──
+check_deps() {
+    local missing=0
+    if ! command -v mpv &>/dev/null; then
+        echo -e "${RED}[!] mpv not found. Install: apt install mpv${NC}"
+        missing=1
+    fi
+    if [ "$missing" -eq 1 ]; then
+        exit 1
+    fi
+    if ! $HAS_JMP && ! $HAS_MPV_SHIM; then
+        echo -e "${YELLOW}[!] No Jellyfin desktop client found${NC}"
+        echo -e "${YELLOW}    Install jellyfin-media-player (preferred) or jellyfin-mpv-shim${NC}"
+        echo -e "${YELLOW}    Falling back to mpv-only mode${NC}"
+    fi
+}
+
+# ── Save server URL ──
+save_server() {
+    local url="$1"
+    echo "$url" > "${JF_LAST}"
+    if ! grep -q "^${url}$" "${JF_SERVERS}" 2>/dev/null; then
+        echo "$url" >> "${JF_SERVERS}"
+    fi
+}
+
+# ── Load last server ──
+get_last_server() {
+    if [ -f "${JF_LAST}" ]; then
+        cat "${JF_LAST}"
+    elif [ -f "${JF_SERVERS}" ]; then
+        head -1 "${JF_SERVERS}"
+    else
+        echo ""
+    fi
+}
+
+# ── Connect to Jellyfin server ──
+connect_server() {
+    local url="${1:-}"
+
+    if [ -z "$url" ]; then
+        echo -e "${BOLD}${CYAN}═══ Jellyfin TV — Server Connect ═══${NC}"
+        echo ""
+        local last_server
+        last_server=$(get_last_server)
+        if [ -n "$last_server" ]; then
+            echo -e "${GREEN}[L] Last: ${last_server}${NC}"
+        fi
+        echo -e "  [S] Enter server URL manually"
+        echo -e "  [Q] Quit"
+        echo ""
+        echo -ne "${CYAN}Choice: ${NC}"
+        read -r choice
+
+        case "$choice" in
+            [Ll])
+                if [ -n "$last_server" ]; then
+                    url="$last_server"
+                else
+                    echo -e "${YELLOW}[!] No last server found${NC}"
+                    echo -ne "${CYAN}Server URL: ${NC}"
+                    read -r url
+                fi
+                ;;
+            [Ss])
+                echo -ne "${CYAN}Server URL (e.g. http://192.168.1.100:8096): ${NC}"
+                read -r url
+                ;;
+            [Qq])
+                return 1
+                ;;
+            *)
+                url="$choice"
+                ;;
+        esac
+    fi
+
+    if [ -z "$url" ]; then
+        echo -e "${RED}[!] No server URL provided${NC}"
+        return 1
+    fi
+
+    # Strip trailing slash
+    url="${url%/}"
+
+    echo -e "${GREEN}[*] Connecting to Jellyfin: ${url}${NC}"
+
+    # Test connection
+    if ! curl -sf --max-time 5 "${url}/System/Info" >/dev/null 2>&1; then
+        echo -e "${RED}[!] Cannot reach ${url} — is the server running?${NC}"
+        return 1
+    fi
+
+    save_server "$url"
+
+    # Open jellyfin-web in browser if available, otherwise show API URL
+    echo -e "${GREEN}[*] Connected! Server URL: ${url}${NC}"
+    echo -e "${CYAN}[*] Open in browser: ${url}/web/index.html${NC}"
+    echo ""
+    browse_server "$url"
+}
+
+# ── Browse Jellyfin server ──
+browse_server() {
+    local server="$1"
+
+    echo -e "${BOLD}${CYAN}═══ Jellyfin TV — Browse ═══${NC}"
+    echo -e "${CYAN}Server: ${server}${NC}"
+    echo ""
+    echo -e "  ${BOLD}[1]${NC} Browse Library"
+    echo -e "  ${BOLD}[2]${NC} Continue Watching"
+    echo -e "  ${BOLD}[3]${NC} Latest Movies"
+    echo -e "  ${BOLD}[4]${NC} Latest TV Shows"
+    echo -e "  ${BOLD}[5]${NC} Play URL directly"
+    echo -e "  ${BOLD}[6]${NC} Change server"
+    echo -e "  ${BOLD}[Q]${NC} Quit"
+    echo ""
+    echo -ne "${CYAN}Choice: ${NC}"
+    read -r choice
+
+    case "$choice" in
+        1) browse_library "$server" ;;
+        2) continue_watching "$server" ;;
+        3) latest_movies "$server" ;;
+        4) latest_tv "$server" ;;
+        5)
+            echo -ne "${CYAN}Enter media URL: ${NC}"
+            read -r media_url
+            play_url "$media_url"
+            ;;
+        6)
+            rm -f "${JF_LAST}"
+            connect_server
+            ;;
+        [Qq]) return 0 ;;
+    esac
+}
+
+# ── Browse library ──
+browse_library() {
+    local server="$1"
+    echo -e "${BOLD}${CYAN}═══ Library ═══${NC}"
+
+    local items
+    items=$(curl -sf "${server}/Items?SortBy=SortName&SortOrder=Ascending&Recursive=true&Fields=Overview,MediaSources&IncludeItemTypes=Movie,Series,Episode&Limit=50" 2>/dev/null || echo "{}")
+
+    if [ "$items" = "{}" ] || [ -z "$items" ]; then
+        echo -e "${RED}[!] Could not fetch library${NC}"
+        return 1
+    fi
+
+    echo -e "${YELLOW}[!] Full Jellyfin browsing requires jellyfin-mpv-shim or a web browser${NC}"
+    echo -e "${CYAN}[*] To browse on HDMI screen, open: ${server}/web/index.html${NC}"
+    echo ""
+    echo -e "  ${BOLD}[L]${NC} Play local file from /opt/cardputer/loot/media/"
+    echo -e "  ${BOLD}[U]${NC} Play URL directly"
+    echo -e "  ${BOLD}[B]${NC} Back to menu"
+    echo ""
+    echo -ne "${CYAN}Choice: ${NC}"
+    read -r choice
+
+    case "$choice" in
+        [Ll]) play_local ;;
+        [Uu])
+            echo -ne "${CYAN}URL: ${NC}"
+            read -r url
+            play_url "$url"
+            ;;
+        [Bb]) browse_server "$server" ;;
+    esac
+}
+
+# ── Continue watching ──
+continue_watching() {
+    local server="$1"
+    echo -e "${CYAN}[*] Checking continue watching...${NC}"
+    local data
+    data=$(curl -sf "${server}/Users/Resume?Limit=20" 2>/dev/null || echo "")
+    if [ -z "$data" ]; then
+        echo -e "${YELLOW}[!] No resume data available (requires authentication)${NC}"
+    fi
+    browse_server "$server"
+}
+
+# ── Latest movies ──
+latest_movies() {
+    local server="$1"
+    echo -e "${CYAN}[*] Fetching latest movies...${NC}"
+    local data
+    data=$(curl -sf "${server}/Items/Latest?IncludeItemTypes=Movie&Limit=20&Fields=Overview,MediaSources" 2>/dev/null || echo "")
+    if [ -z "$data" ]; then
+        echo -e "${YELLOW}[!] Could not fetch latest movies${NC}"
+    fi
+    browse_server "$server"
+}
+
+# ── Latest TV ──
+latest_tv() {
+    local server="$1"
+    echo -e "${CYAN}[*] Fetching latest TV shows...${NC}"
+    local data
+    data=$(curl -sf "${server}/Items/Latest?IncludeItemTypes=Episode&Limit=20&Fields=Overview,MediaSources" 2>/dev/null || echo "")
+    if [ -z "$data" ]; then
+        echo -e "${YELLOW}[!] Could not fetch latest episodes${NC}"
+    fi
+    browse_server "$server"
+}
+
+# ── Play a URL via mpv (YouTube, direct stream, etc.) ──
+play_url() {
+    local url="$1"
+    local player
+    player=$(get_mpv_cmd)
+
+    if is_hdmi; then
+        echo -e "${GREEN}[*] Playing on HDMI (1080P)${NC}"
+    else
+        echo -e "${GREEN}[*] Playing audio-only (no HDMI monitor detected)${NC}"
+    fi
+
+    echo -e "${CYAN}[*] Player: ${player}${NC}"
+    echo -e "${CYAN}[*] URL: ${url}${NC}"
+
+    # Kill any existing media player
+    killall mpv ffplay 2>/dev/null || true
+
+    ${player} "${url}" 2>/dev/null &
+    local pid=$!
+    echo "$pid" > /tmp/jellyfin-tv.pid
+    echo -e "${GREEN}[*] PID: ${pid} (kill with: jellyfin-tv off)${NC}"
+    wait "$pid" 2>/dev/null || true
+}
+
+# ── Play local media file ──
+play_local() {
+    echo -e "${BOLD}${CYAN}═══ Local Media Player ═══${NC}"
+    echo ""
+
+    local files=()
+    local i=1
+
+    for ext in mp4 mkv avi mov mp3 flac wav ogg aac m4a webm; do
+        while IFS= read -r -d '' f; do
+            files+=("$f")
+            echo -e "  ${GREEN}[${i}]${NC} $(basename "$f")"
+            ((i++))
+        done < <(find "${LOOT_DIR}" -maxdepth 2 -name "*.${ext}" -print0 2>/dev/null)
+    done
+
+    if [ ${#files[@]} -eq 0 ]; then
+        echo -e "${YELLOW}[!] No media files found in ${LOOT_DIR}${NC}"
+        echo -e "${CYAN}    Place files in: ${LOOT_DIR}/${NC}"
+        return 1
+    fi
+
+    echo ""
+    echo -ne "${CYAN}Select file [1-${#files[@]}] or [A]ll shuffled: ${NC}"
+    read -r choice
+
+    local player
+    player=$(get_local_mpv_cmd)
+
+    killall mpv ffplay 2>/dev/null || true
+
+    case "$choice" in
+        [Aa])
+            echo -e "${GREEN}[*] Playing all files shuffled on HDMI${NC}"
+            ${player} --shuffle "${files[@]}" 2>/dev/null &
+            ;;
+        [0-9]*)
+            local idx="$choice"
+            if [ "$idx" -ge 1 ] && [ "$idx" -le "${#files[@]}" ]; then
+                echo -e "${GREEN}[*] Playing: $(basename "${files[$idx]}")${NC}"
+                ${player} "${files[$idx]}" 2>/dev/null &
+            else
+                echo -e "${RED}[!] Invalid selection${NC}"
+                return 1
+            fi
+            ;;
+        *)
+            echo -e "${RED}[!] Invalid selection${NC}"
+            return 1
+            ;;
+    esac
+
+    local pid=$!
+    echo "$pid" > /tmp/jellyfin-tv.pid
+    echo -e "${GREEN}[*] PID: ${pid}${NC}"
+}
+
+# ── Cast mode — start mpv-shim to receive Jellyfin casts ──
+cast_mode() {
+    echo -e "${BOLD}${CYAN}═══ Jellyfin Cast Receiver ═══${NC}"
+    echo -e "${CYAN}Starting mpv-shim to receive casts from Jellyfin...${NC}"
+    echo ""
+
+    if ! command -v jellyfin-mpv-shim &>/dev/null; then
+        echo -e "${YELLOW}[!] jellyfin-mpv-shim not found${NC}"
+        echo -e "${CYAN}    Install: pip3 install jellyfin-mpv-shim${NC}"
+        echo ""
+        echo -e "${CYAN}Alternative: Use mpv directly:${NC}"
+        echo -e "  ${GREEN}jellyfin-tv play <url>${NC}"
+        echo -e "  ${GREEN}jellyfin-tv connect <server-url>${NC}"
+        return 1
+    fi
+
+    if is_hdmi; then
+        echo -e "${GREEN}[*] HDMI detected — starting in TV mode (1080P)${NC}"
+        export MPV_FLAGS="--fs --no-border --vo=gpu --gpu-context=wayland --hwdec=auto"
+    else
+        echo -e "${YELLOW}[*] No HDMI — starting in audio-only mode${NC}"
+        export MPV_FLAGS="--no-video --force-window=no"
+    fi
+
+    killall mpv ffplay 2>/dev/null || true
+    jellyfin-mpv-shim 2>/dev/null &
+    local pid=$!
+    echo "$pid" > /tmp/jellyfin-tv.pid
+    echo -e "${GREEN}[*] Cast receiver running (PID: ${pid})${NC}"
+    echo -e "${CYAN}[*] Open Jellyfin web UI or app and cast to this device${NC}"
+    echo -e "${CYAN}[*] Press Ctrl+C to stop${NC}"
+    wait "$pid" 2>/dev/null || true
+}
+
+# ── Stop all media ──
+stop_all() {
+    echo -e "${YELLOW}[*] Stopping all media players...${NC}"
+    killall mpv ffplay jellyfinmediaplayer jellyfin-mpv-shim 2>/dev/null || true
+    rm -f /tmp/jellyfin-tv.pid /tmp/webradio.pid /tmp/music-player.pid 2>/dev/null || true
+    echo -e "${GREEN}[*] Stopped${NC}"
+}
+
+# ── Auto-detect mode based on HDMI ──
+auto_detect() {
+    if is_hdmi; then
+        echo -e "${GREEN}HDMI monitor detected — TV Media Box mode (1080P)${NC}"
+    else
+        echo -e "${YELLOW}No HDMI monitor — audio-only mode${NC}"
+        echo -e "${CYAN}Connect HDMI for full 1080P video output${NC}"
+    fi
+}
+
+# ── Launch Jellyfin Media Player (Qt5 desktop app) ──
+launch_desktop() {
+    echo -e "${BOLD}${CYAN}═══ Jellyfin Desktop ═══${NC}"
+
+    if ! command -v jellyfinmediaplayer &>/dev/null; then
+        echo -e "${RED}[!] jellyfin-media-player not installed${NC}"
+        echo -e "${CYAN}    Run: pi-gen stage 16-jellyfin-desktop${NC}"
+        return 1
+    fi
+
+    if is_hdmi; then
+        echo -e "${GREEN}[*] Launching on HDMI (1080P)${NC}"
+        export QT_QPA_PLATFORM=wayland
+        export QT_WAYLAND_FORCE_DPI=96
+    else
+        echo -e "${YELLOW}[*] Launching on LCD (320x170)${NC}"
+        echo -e "${CYAN}    Connect HDMI for best experience${NC}"
+        export QT_QPA_PLATFORM=wayland
+        export QT_WAYLAND_FORCE_DPI=physical
+    fi
+
+    # Kill any existing media player
+    killall mpv ffplay jellyfinmediaplayer jellyfin-mpv-shim 2>/dev/null || true
+
+    # Configure mpv.conf for this device
+    export MPV_HOME="/etc/xdg/jellyfinmediaplayer"
+
+    jellyfinmediaplayer 2>/dev/null &
+    local pid=$!
+    echo "$pid" > /tmp/jellyfin-tv.pid
+    echo -e "${GREEN}[*] Jellyfin Desktop running (PID: ${pid})${NC}"
+    echo -e "${CYAN}[*] Press Ctrl+C or 'jellyfin-tv off' to stop${NC}"
+    wait "$pid" 2>/dev/null || true
+}
+
+# ── Interactive menu ──
+main_menu() {
+    auto_detect
+    echo ""
+    echo -e "${BOLD}${CYAN}╔═══════════════════════════════════════╗${NC}"
+    echo -e "${BOLD}${CYAN}║     ZERO-DAY OS — TV Media Box        ║${NC}"
+    echo -e "${BOLD}${CYAN}╚═══════════════════════════════════════╝${NC}"
+    echo ""
+    if $HAS_JMP; then
+        echo -e "  ${GREEN}${BOLD}[D]${NC} Jellyfin Desktop (full GUI client)"
+    elif $HAS_MPV_SHIM; then
+        echo -e "  ${GREEN}${BOLD}[D]${NC} Cast receiver (mpv-shim)"
+    fi
+    echo -e "  ${BOLD}[1]${NC} Connect to Jellyfin server"
+    echo -e "  ${BOLD}[2]${NC} Browse last server"
+    echo -e "  ${BOLD}[3]${NC} Cast receiver (receive casts from Jellyfin)"
+    echo -e "  ${BOLD}[4]${NC} Play URL (YouTube, direct stream, etc.)"
+    echo -e "  ${BOLD}[5]${NC} Play local media files"
+    echo -e "  ${BOLD}[6]${NC} WebRadio (Danish)"
+    echo -e "  ${BOLD}[7]${NC} YouTube search"
+    echo -e "  ${BOLD}[S]${NC} Stop all playback"
+    echo -e "  ${BOLD}[Q]${NC} Quit"
+    echo ""
+    echo -ne "${CYAN}Choice: ${NC}"
+    read -r choice
+
+    case "$choice" in
+        [Dd])
+            if $HAS_JMP; then
+                launch_desktop
+            elif $HAS_MPV_SHIM; then
+                cast_mode
+            else
+                echo -e "${YELLOW}[!] No Jellyfin desktop client available${NC}"
+                echo -e "${CYAN}    Use options 1-7 for TUI-based playback${NC}"
+            fi
+            ;;
+        1) connect_server ;;
+        2)
+            local last
+            last=$(get_last_server)
+            if [ -n "$last" ]; then
+                connect_server "$last"
+            else
+                echo -e "${YELLOW}[!] No last server. Connect first.${NC}"
+                connect_server
+            fi
+            ;;
+        3) cast_mode ;;
+        4)
+            echo -ne "${CYAN}URL: ${NC}"
+            read -r url
+            play_url "$url"
+            ;;
+        5) play_local ;;
+        6) webradio_menu ;;
+        7) yt_search ;;
+        [Ss]) stop_all ;;
+        [Qq]) exit 0 ;;
+        *) main_menu ;;
+    esac
+}
+
+# ── Webradio submenu ──
+webradio_menu() {
+    echo -e "${BOLD}${CYAN}═══ WebRadio ═══${NC}"
+    echo -e "  ${BOLD}[1]${NC} DR P1"
+    echo -e "  ${BOLD}[2]${NC} DR P3"
+    echo -e "  ${BOLD}[3]${NC} NOVA"
+    echo -e "  ${BOLD}[4]${NC} POPFM"
+    echo -ne "${CYAN}Station: ${NC}"
+    read -r station
+    case "$station" in
+        1) webradio-danish DR_P1 ;;
+        2) webradio-danish DR_P3 ;;
+        3) webradio-danish NOVA ;;
+        4) webradio-danish POPFM ;;
+    esac
+}
+
+# ── YouTube search ──
+yt_search() {
+    echo -ne "${CYAN}Search: ${NC}"
+    read -r query
+    if [ -n "$query" ]; then
+        yt search "$query"
+    fi
+}
+
+# ── Main ──
+check_deps
+
+case "${1:-}" in
+    connect)
+        shift
+        connect_server "${1:-}"
+        ;;
+    play)
+        shift
+        play_url "${1:-}"
+        ;;
+    cast)
+        cast_mode
+        ;;
+    local)
+        play_local
+        ;;
+    off|stop)
+        stop_all
+        ;;
+    status)
+        if [ -f /tmp/jellyfin-tv.pid ]; then
+            pid=$(cat /tmp/jellyfin-tv.pid)
+            if kill -0 "$pid" 2>/dev/null; then
+                echo -e "${GREEN}Media box running (PID: ${pid})${NC}"
+                if is_hdmi; then
+                    echo -e "${GREEN}HDMI: connected (1080P output)${NC}"
+                else
+                    echo -e "${YELLOW}HDMI: not connected (audio-only)${NC}"
+                fi
+            else
+                echo -e "${YELLOW}Media box not running${NC}"
+            fi
+        else
+            echo -e "${YELLOW}Media box not running${NC}"
+            auto_detect
+        fi
+        ;;
+    *)
+        main_menu
+        ;;
+esac

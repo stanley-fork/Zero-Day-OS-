@@ -1,0 +1,435 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/oled-ctl
+# M5Stack OLED Unit SH1107 driver for ZERO-DAY OS
+# 1.3" 128x64 monochrome OLED on I2C (0x3C)
+#
+# Uses Python luma.oled for SH1107 rendering via GPIO hat Grove port
+# Connects via the NFC/CC1101 GPIO hat's extra Grove port (not Cardputer Zero's main Grove)
+#
+# Usage:
+#   oled-ctl install             Install luma.oled and dependencies
+#   oled-ctl status              Show OLED status
+#   oled-ctl test                Test pattern on OLED
+#   oled-ctl clear               Clear OLED display
+#   oled-ctl text <message>      Display text on OLED
+#   oled-ctl text-rows <line1> <line2> <line3> <line4>
+#                                Display up to 4 lines of text
+#   oled-ctl trail               Show Trail breadcrumb direction
+#   oled-ctl overwatch           Show Overwatch threat level
+#   oled-ctl ip                  Show WiFi IP on OLED
+#   oled-ctl battery             Show battery level on OLED
+#   oled-ctl sysinfo              Show system info (CPU, mem, disk)
+#   oled-ctl clock                Show clock on OLED
+#   oled-ctl qr <text>           Generate QR code on OLED
+#   oled-ctl off                  Turn off OLED display
+#   oled-ctl daemon               Start status daemon (rotating info)
+
+I2C_BUS="${OLED_I2C_BUS:-1}"
+I2C_ADDR="${OLED_I2C_ADDR:-0x3C}"
+WIDTH=128
+HEIGHT=64
+TRAIL_STATUS="/tmp/trail-status"
+TRAIL_PID="/tmp/trail.pid"
+OLED_PID="/tmp/oled-ctl.pid"
+OLED_FONT="/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+check_deps() {
+    if ! python3 -c "from luma.oled.device import sh1107" 2>/dev/null; then
+        echo -e "${RED}luma.oled not installed${NC}"
+        echo "  Run: oled-ctl install"
+        return 1
+    fi
+    return 0
+}
+
+cmd_install() {
+    echo -e "${BOLD}Installing M5Stack OLED Unit SH1107 dependencies...${NC}"
+    pip3 install luma.oled luma.core pillow qrcode 2>/dev/null || {
+        echo -e "${YELLOW}pip3 failed, trying apt...${NC}"
+        apt-get install -y python3-pip python3-pillow 2>/dev/null
+        pip3 install luma.oled luma.core qrcode 2>/dev/null || {
+            echo -e "${RED}Installation failed${NC}"
+            echo "  Manual: pip3 install luma.oled luma.core pillow qrcode"
+            return 1
+        }
+    }
+    mkdir -p /usr/share/fonts/truetype/dejavu/ 2>/dev/null || true
+    echo -e "${GREEN}Dependencies installed${NC}"
+}
+
+python_oled() {
+    local code="$1"
+    python3 -c "
+from luma.oled.device import sh1107
+from luma.core.interface.serial import i2c
+import sys
+
+serial = i2c(port=${I2C_BUS}, address=${I2C_ADDR})
+try:
+    device = sh1107(serial, rotate=0)
+    device.width = ${WIDTH}
+    device.height = ${HEIGHT}
+except Exception as e:
+    print(f'OLED init failed: {e}', file=sys.stderr)
+    sys.exit(1)
+
+${code}
+" 2>/dev/null
+}
+
+python_oled_canvas() {
+    local draw_code="$1"
+    python3 -c "
+from luma.oled.device import sh1107
+from luma.core.interface.serial import i2c
+from luma.core.render import canvas
+from PIL import ImageFont
+import sys
+
+serial = i2c(port=${I2C_BUS}, address=${I2C_ADDR})
+try:
+    device = sh1107(serial, rotate=0)
+except Exception as e:
+    print(f'OLED init failed: {e}', file=sys.stderr)
+    sys.exit(1)
+
+try:
+    font_small = ImageFont.truetype('${OLED_FONT}', 10)
+except:
+    font_small = ImageFont.load_default()
+try:
+    font_medium = ImageFont.truetype('${OLED_FONT}', 13)
+except:
+    font_medium = ImageFont.load_default()
+try:
+    font_large = ImageFont.truetype('${OLED_FONT}', 18)
+except:
+    font_large = ImageFont.load_default()
+try:
+    font_xlarge = ImageFont.truetype('${OLED_FONT}', 24)
+except:
+    font_xlarge = ImageFont.load_default()
+
+with canvas(device) as draw:
+${draw_code}
+" 2>/dev/null
+}
+
+cmd_status() {
+    echo -e "${BOLD}M5Stack OLED Unit SH1107 Status:${NC}"
+    echo "  Bus:       I2C-${I2C_BUS}"
+    echo "  Address:   ${I2C_ADDR}"
+    echo "  Display:   128x64 monochrome OLED"
+    echo "  Driver:    SH1107 (luma.oled)"
+    
+    if i2cdetect -y "${I2C_BUS}" 0x3c 0x3d 2>/dev/null | grep -q "3c\|3d"; then
+        echo -e "  Device:    ${GREEN}detected${NC}"
+    else
+        echo -e "  Device:    ${RED}not found${NC}"
+        echo "  Check GPIO hat Grove port wiring and I2C configuration"
+    fi
+    
+    if python3 -c "from luma.oled.device import sh1107" 2>/dev/null; then
+        echo -e "  Python:    ${GREEN}luma.oled available${NC}"
+    else
+        echo -e "  Python:    ${RED}luma.oled not installed${NC}"
+        echo "  Run: oled-ctl install"
+    fi
+}
+
+cmd_test() {
+    check_deps || return 1
+    echo -e "${BOLD}Running OLED test pattern...${NC}"
+    python_oled_canvas "
+    # Border
+    draw.rectangle(device.bounding_box, outline=255)
+    # Cross
+    draw.line([(0, 0), (127, 63)], fill=255)
+    draw.line([(127, 0), (0, 63)], fill=255)
+    # Center text
+    draw.text((20, 22), 'ZERODAY', font=font_large, fill=255)
+    draw.text((24, 42), '128x64 OK', font=font_small, fill=255)
+"
+    echo -e "${GREEN}Test pattern displayed${NC}"
+}
+
+cmd_clear() {
+    check_deps 2>/dev/null || return 0
+    python_oled_canvas "pass" 2>/dev/null || true
+    echo "OLED cleared"
+}
+
+cmd_off() {
+    check_deps 2>/dev/null || return 0
+    python_oled "device.cleanup()" 2>/dev/null || true
+    echo -e "${YELLOW}OLED turned off${NC}"
+}
+
+cmd_text() {
+    local msg="${*:-ZERODAY OS}"
+    check_deps || return 1
+    python_oled_canvas "
+    draw.text((0, 2), '${msg}', font=font_large, fill=255)
+"
+}
+
+cmd_text_rows() {
+    local line1="${1:-}"
+    local line2="${2:-}"
+    local line3="${3:-}"
+    local line4="${4:-}"
+    check_deps || return 1
+    python_oled_canvas "
+    y = 0
+    draw.text((0, y), '${line1}', font=font_medium, fill=255)
+    y += 15
+    draw.text((0, y), '${line2}', font=font_medium, fill=255)
+    y += 15
+    draw.text((0, y), '${line3}', font=font_medium, fill=255)
+    y += 15
+    draw.text((0, y), '${line4}', font=font_medium, fill=255)
+"
+}
+
+cmd_trail() {
+    check_deps || return 1
+    local status="NO TRAIL"
+    local direction=""
+    local pct=""
+    
+    if [ -f "$TRAIL_STATUS" ]; then
+        status=$(cat "$TRAIL_STATUS" 2>/dev/null || echo "NO TRAIL")
+    fi
+    
+    if [ -f "$TRAIL_PID" ] && kill -0 "$(cat "$TRAIL_PID")" 2>/dev/null; then
+        local mode=$(cat /tmp/trail-mode 2>/dev/null || echo "drop")
+        case "$mode" in
+            drop)   direction="DROP" ;;
+            exit)   direction="EXIT" ;;
+            pause)  direction="PAUSE" ;;
+            *)      direction="?" ;;
+        esac
+    else
+        direction="STOP"
+    fi
+    
+    python_oled_canvas "
+    draw.rectangle(device.bounding_box, outline=255)
+    draw.text((4, 0), 'TRAIL', font=font_large, fill=255)
+    draw.text((4, 22), '${direction}', font=font_large, fill=255)
+    # Truncate status to fit 128px
+    status = '${status}'[:20]
+    draw.text((4, 44), status, font=font_small, fill=255)
+"
+}
+
+cmd_overwatch() {
+    check_deps || return 1
+    local threat="OK"
+    local details=""
+    
+    if [ -f "$TRAIL_STATUS" ]; then
+        local trail_status=$(cat "$TRAIL_STATUS" 2>/dev/null || echo "")
+        if echo "$trail_status" | grep -q "CRIT"; then
+            threat="CRIT"
+            details=$(echo "$trail_status" | head -c 16)
+        elif echo "$trail_status" | grep -q "WARN"; then
+            threat="WARN"
+            details=$(echo "$trail_status" | head -c 16)
+        elif echo "$trail_status" | grep -q "WATCH"; then
+            threat="WATCH"
+            details=$(echo "$trail_status" | head -c 16)
+        fi
+    fi
+    
+    python_oled_canvas "
+    draw.rectangle(device.bounding_box, outline=255)
+    draw.text((4, 0), 'OVERWATCH', font=font_medium, fill=255)
+    if '${threat}' == 'CRIT':
+        draw.rectangle([(2, 18), (126, 40)], fill=255)
+        draw.text((20, 20), '!! CRIT !!', font=font_large, fill=0)
+    elif '${threat}' == 'WARN':
+        draw.rectangle([(2, 18), (126, 40)], outline=255)
+        draw.text((30, 20), 'WARN', font=font_large, fill=255)
+    elif '${threat}' == 'WATCH':
+        draw.text((30, 22), 'WATCH', font=font_large, fill=255)
+    else:
+        draw.text((40, 22), 'OK', font=font_large, fill=255)
+    if '${details}':
+        draw.text((4, 48), '${details}', font=font_small, fill=255)
+"
+}
+
+cmd_ip() {
+    check_deps || return 1
+    local ip=$(ip -4 addr show wlan0 2>/dev/null | grep -oP 'inet \K[\d.]+' | head -1)
+    local ssid=$(iwgetid -r 2>/dev/null || echo "OFF")
+    
+    if [ -z "$ip" ]; then
+        ip="OFF"
+    fi
+    
+    python_oled_canvas "
+    draw.rectangle(device.bounding_box, outline=255)
+    draw.text((4, 0), 'WiFi', font=font_medium, fill=255)
+    draw.text((4, 20), 'SSID:', font=font_small, fill=255)
+    draw.text((4, 32), '${ssid:0:16}', font=font_medium, fill=255)
+    draw.text((4, 48), 'IP: ${ip}', font=font_medium, fill=255)
+"
+}
+
+cmd_battery() {
+    check_deps || return 1
+    local pct=$(cat /sys/class/power_supply/bq27220/capacity 2>/dev/null || echo "?")
+    local status=$(cat /sys/class/power_supply/bq27220/status 2>/dev/null || echo "?")
+    local temp=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo "0")
+    temp=$(echo "scale=0; ${temp:-0} / 1000" | bc 2>/dev/null || echo "?")
+    
+    local bar_width=$(( (pct * 100) / 100 ))
+    bar_width=$((bar_width < 100 ? bar_width : 100))
+    
+    python_oled_canvas "
+    draw.rectangle(device.bounding_box, outline=255)
+    draw.text((4, 0), 'BATTERY', font=font_medium, fill=255)
+    # Battery bar
+    draw.rectangle([(4, 18), (124, 34)], outline=255)
+    draw.rectangle([(4, 18), (4 + ${bar_width}, 34)], fill=255)
+    draw.text((44, 18), '${pct}%', font=font_medium, fill=${pct%%\%}0 < 15 and 255 or 0)
+    draw.text((4, 40), 'Status: ${status}', font=font_small, fill=255)
+    draw.text((4, 52), 'CPU: ${temp}C', font=font_small, fill=255)
+"
+}
+
+cmd_sysinfo() {
+    check_deps || return 1
+    local mem_pct=$(free | grep Mem | awk '{printf "%.0f", $3/$2 * 100}' 2>/dev/null || echo "?")
+    local disk_pct=$(df --output=pcent / 2>/dev/null | tail -1 | tr -d ' %' || echo "?")
+    local load=$(cat /proc/loadavg 2>/dev/null | awk '{print $1}' || echo "?")
+    local temp=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo "0")
+    temp=$(echo "scale=0; ${temp:-0} / 1000" | bc 2>/dev/null || echo "?")
+    
+    python_oled_canvas "
+    draw.rectangle(device.bounding_box, outline=255)
+    draw.text((2, 0), 'MEM:${mem_pct}%  DSK:${disk_pct}%', font=font_small, fill=255)
+    draw.text((2, 12), 'LOAD:${load}  CPU:${temp}C', font=font_small, fill=255)
+"
+}
+
+cmd_clock() {
+    check_deps || return 1
+    local time=$(date +"%H:%M")
+    local date=$(date +"%m/%d")
+    
+    python_oled_canvas "
+    draw.text((16, 0), '${time}', font=font_xlarge, fill=255)
+    draw.text((32, 36), '${date}', font=font_medium, fill=255)
+"
+}
+
+cmd_qr() {
+    local text="${*:-ZERODAY OS}"
+    check_deps || return 1
+    python3 -c "
+from luma.oled.device import sh1107
+from luma.core.interface.serial import i2c
+from luma.core.render import canvas
+import qrcode
+from PIL import Image
+
+serial = i2c(port=${I2C_BUS}, address=${I2C_ADDR})
+device = sh1107(serial, rotate=0)
+
+qr = qrcode.QRCode(version=1, box_size=2, border=1)
+qr.add_data('${text}')
+qr.make(fit=True)
+qr_img = qr.make_image(fill_color='black', back_color='white').convert('1')
+
+qr_img = qr_img.resize((60, 60), Image.NEAREST)
+
+with canvas(device) as draw:
+    draw.bitmap((34, 2), qr_img, fill=255)
+    # Truncate text to fit
+    txt = '${text}'[:16]
+    draw.text((0, 54), txt, fill=255)
+" 2>/dev/null
+}
+
+cmd_daemon() {
+    check_deps || return 1
+    echo -e "${BOLD}Starting OLED status daemon...${NC}"
+    echo "  Cycles through: clock → sysinfo → trail → overwatch"
+    
+    while true; do
+        cmd_clock 2>/dev/null || true
+        sleep 5
+        cmd_sysinfo 2>/dev/null || true
+        sleep 5
+        if [ -f "$TRAIL_PID" ] && kill -0 "$(cat "$TRAIL_PID")" 2>/dev/null; then
+            cmd_trail 2>/dev/null || true
+            sleep 5
+            cmd_overwatch 2>/dev/null || true
+            sleep 5
+        fi
+    done
+}
+
+case "${1:-help}" in
+    install)    cmd_install ;;
+    status)     cmd_status ;;
+    test)       cmd_test ;;
+    clear)      cmd_clear ;;
+    off)        cmd_off ;;
+    text)       cmd_text "${2:-ZERODAY OS}" ;;
+    text-rows)  cmd_text_rows "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
+    trail)      cmd_trail ;;
+    overwatch)  cmd_overwatch ;;
+    ip)         cmd_ip ;;
+    battery)    cmd_battery ;;
+    sysinfo)    cmd_sysinfo ;;
+    clock)      cmd_clock ;;
+    qr)         cmd_qr "${@:2}" ;;
+    daemon)     cmd_daemon ;;
+    help|-h|--help)
+        echo "oled-ctl — M5Stack OLED Unit SH1107 driver for ZERO-DAY OS"
+        echo ""
+        echo "Usage: oled-ctl <command> [args]"
+        echo ""
+        echo "Display: 1.3\" 128x64 monochrome OLED (SH1107)"
+        echo "Connect: M5Stack OLED Unit → GPIO hat Grove port (I2C mode)"
+        echo "Address: 0x3C (default) or 0x3D"
+        echo ""
+        echo "Commands:"
+        echo "  install              Install luma.oled dependencies"
+        echo "  status               Show OLED detection status"
+        echo "  test                 Display test pattern"
+        echo "  clear                Clear display"
+        echo "  off                  Turn off display"
+        echo "  text <msg>           Display text message"
+        echo "  text-rows L1 L2 L3 L4  Display up to 4 lines"
+        echo "  trail                Show Trail navigation status"
+        echo "  overwatch            Show Overwatch threat level"
+        echo "  ip                   Show WiFi IP"
+        echo "  battery              Show battery status"
+        echo "  sysinfo              Show CPU/mem/disk stats"
+        echo "  clock                Show clock"
+        echo "  qr <text>            Generate QR code"
+        echo "  daemon               Rotating status display"
+        echo ""
+        echo "Environment:"
+        echo "  OLED_I2C_BUS=1      I2C bus number (default: 1)"
+        echo "  OLED_I2C_ADDR=0x3C  I2C address (default: 0x3C)"
+        ;;
+    *)
+        echo "Unknown command: $1"
+        echo "Run: oled-ctl help"
+        exit 1
+        ;;
+esac

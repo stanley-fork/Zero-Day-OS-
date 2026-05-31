@@ -1,0 +1,197 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/zeroday-ble-remote
+# ZERO-DAY BLE Remote API — wrapper script for Flipper Zero-style GATT server
+#
+# Starts/stops the Python GATT server that exposes BLE characteristics
+# for Android/iOS companion app remote control.
+#
+# GATT Service: ZERO-DAY Remote (UUID: 0000fe5e-0000-1000-8000-00805f9b34fb)
+#   Characteristics:
+#     Command RX  (UUID: fe5e0001) — Write — receive commands from app
+#     Command TX  (UUID: fe5e0002) — Notify — send responses to app
+#     File TX     (UUID: fe5e0003) — Notify — stream file data to app
+#     File RX     (UUID: fe5e0004) — Write — receive file data from app
+#     Status      (UUID: fe5e0005) — Read/Notify — device status JSON
+#     Screen      (UUID: fe5e0006) — Notify — screen capture stream
+#
+# Usage:
+#   zeroday-ble-remote start    — Start BLE GATT server
+#   zeroday-ble-remote stop     — Stop BLE GATT server
+#   zeroday-ble-remote status   — Check if running
+#   zeroday-ble-remote send <msg> — Send test notification
+#
+# Companion app: ZERO-DAY Remote (Android/iOS)
+#   - Terminal access (remote shell)
+#   - File browser (download/upload loot)
+#   - Device dashboard (battery, WiFi, CPU, disk)
+#   - Quick actions (panic, stealth, WiFi toggle, screenshots)
+#   - Mesh chat relay (BLE → LoRa)
+#   - C6L control (BLE → C6L → Zigbee/BLE scan)
+
+GATT_SCRIPT="/opt/cardputer/ble-remote/gatt_server.py"
+PID_FILE="/tmp/zeroday-ble-remote.pid"
+LOG_FILE="/var/log/zeroday-ble-remote.log"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+cmd_start() {
+    if [ -f "${PID_FILE}" ] && kill -0 "$(cat "${PID_FILE}")" 2>/dev/null; then
+        echo -e "${YELLOW}BLE Remote API already running (PID: $(cat "${PID_FILE}"))${NC}"
+        return 0
+    fi
+
+    if [ ! -f "${GATT_SCRIPT}" ]; then
+        echo -e "${RED}[!] GATT server script not found: ${GATT_SCRIPT}${NC}"
+        return 1
+    fi
+
+    rfkill unblock bluetooth 2>/dev/null || true
+    hciconfig hci0 up 2>/dev/null || true
+
+    echo -e "${BOLD}${CYAN}ZERO-DAY BLE Remote API${NC}"
+    echo -e "${CYAN}Starting GATT server on hci0...${NC}"
+    echo -e "${CYAN}Device name: Cardputer-Zero${NC}"
+    echo -e "${CYAN}Service UUID: 0000fe5e-0000-1000-8000-00805f9b34fb${NC}"
+    echo ""
+    echo -e "${BOLD}GATT Characteristics:${NC}"
+    echo -e "  ${GREEN}Command RX${NC}  (fe5e0001) — Write — receive commands"
+    echo -e "  ${GREEN}Command TX${NC}  (fe5e0002) — Notify — send responses"
+    echo -e "  ${GREEN}File TX${NC}     (fe5e0003) — Notify — stream file data"
+    echo -e "  ${GREEN}File RX${NC}     (fe5e0004) — Write — receive file data"
+    echo -e "  ${GREEN}Status${NC}      (fe5e0005) — Read/Notify — device JSON"
+    echo -e "  ${GREEN}Screen${NC}      (fe5e0006) — Notify — screen capture"
+    echo ""
+    echo -e "${BOLD}Companion App:${NC} ZERO-DAY Remote (Android/iOS)"
+    echo -e "  - Shell: remote command execution"
+    echo -e "  - Files: browse /opt/cardputer/loot/, upload/download"
+    echo -e "  - Dashboard: battery, WiFi, CPU temp, disk"
+    echo -e "  - Quick actions: panic, stealth, WiFi/BT toggle"
+    echo -e "  - Mesh relay: BLE → LoRa meshchat"
+    echo -e "  - C6L control: BLE → C6L → Zigbee/BLE scan"
+    echo ""
+    echo -e "${YELLOW}Waiting for BLE connection...${NC}"
+
+    /usr/bin/python3 "${GATT_SCRIPT}" >> "${LOG_FILE}" 2>&1 &
+    local pid=$!
+    echo "$pid" > "${PID_FILE}"
+    echo -e "${GREEN}[+] BLE Remote API started (PID: ${pid})${NC}"
+    echo -e "${CYAN}    Log: tail -f ${LOG_FILE}${NC}"
+}
+
+cmd_stop() {
+    echo -e "${YELLOW}Stopping BLE Remote API...${NC}"
+    if [ -f "${PID_FILE}" ]; then
+        local pid=$(cat "${PID_FILE}" 2>/dev/null)
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+            echo -e "${GREEN}[+] Stopped BLE Remote API (PID: ${pid})${NC}"
+        else
+            echo -e "${YELLOW}Process ${pid} not running${NC}"
+        fi
+        rm -f "${PID_FILE}"
+    fi
+    hciconfig hci0 noscan 2>/dev/null || true
+    echo -e "${GREEN}[+] BLE Remote API stopped${NC}"
+}
+
+cmd_status() {
+    if [ -f "${PID_FILE}" ] && kill -0 "$(cat "${PID_FILE}")" 2>/dev/null; then
+        echo -e "${GREEN}BLE Remote API running (PID: $(cat "${PID_FILE}"))${NC}"
+    else
+        echo -e "${YELLOW}BLE Remote API not running${NC}"
+        echo -e "${CYAN}Start with: zeroday-ble-remote start${NC}"
+        echo -e "${CYAN}Or enable:   systemctl enable zeroday-ble-remote${NC}"
+        return 1
+    fi
+
+    echo ""
+    echo -e "${BOLD}Device Status:${NC}"
+    local wifi_ip=$(ip -4 addr show wlan0 2>/dev/null | grep -oP 'inet \K[\d.]+' | head -1 || echo "OFF")
+    local wifi_ssid=$(iwgetid -r 2>/dev/null || echo "OFF")
+    local bat=$(cat /sys/class/power_supply/bq27220/capacity 2>/dev/null || echo "?")
+    local temp=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null | awk '{printf "%.1fC", $1/1000}' || echo "?")
+    local hdmi=$(cat /sys/class/drm/card0-HDMI-A-1/status 2>/dev/null || echo "disconnected")
+    echo -e "  WiFi: ${wifi_ssid (${wifi_ip})"
+    echo -e "  Battery: ${bat}%"
+    echo -e "  CPU Temp: ${temp}"
+    echo -e "  HDMI: ${hdmi}"
+}
+
+cmd_send() {
+    local msg="${1:-ping}"
+    echo "$(date -Iseconds) TX: ${msg}" >> /opt/cardputer/config/ble-remote/notify.log 2>/dev/null || true
+    echo -e "${GREEN}Sent: ${msg}${NC}"
+}
+
+case "${1:-}" in
+    start)
+        cmd_start
+        ;;
+    stop)
+        cmd_stop
+        ;;
+    restart)
+        cmd_stop
+        sleep 1
+        cmd_start
+        ;;
+    status)
+        cmd_status
+        ;;
+    send)
+        shift
+        cmd_send "${1:-ping}"
+        ;;
+    help|--help|-h)
+        echo "Usage: zeroday-ble-remote {start|stop|restart|status|send <msg>}"
+        echo ""
+        echo "BLE GATT Remote API — Flipper Zero-style Android/iOS companion"
+        echo ""
+        echo "Commands:"
+        echo "  start          Start BLE GATT server (advertising as 'Cardputer-Zero')"
+        echo "  stop           Stop BLE GATT server"
+        echo "  restart        Restart BLE GATT server"
+        echo "  status         Show server status and device info"
+        echo "  send <msg>     Send test notification"
+        echo ""
+        echo "GATT Service: 0000fe5e-0000-1000-8000-00805f9b34fb"
+        echo "  Command RX  (fe5e0001) — Write — receive commands from app"
+        echo "  Command TX  (fe5e0002) — Notify — send responses to app"
+        echo "  File TX     (fe5e0003) — Notify — stream file data to app"
+        echo "  File RX     (fe5e0004) — Write — receive file data from app"
+        echo "  Status      (fe5e0005) — Read/Notify — device status JSON"
+        echo "  Screen      (fe5e0006) — Notify — screen capture stream"
+        echo ""
+        echo "App Commands (sent via Command RX characteristic):"
+        echo "  ping                   — Connection test"
+        echo "  status                 — Device status JSON"
+        echo "  panic                  — Kill all offensive processes"
+        echo "  stealth                — Toggle LCD backlight"
+        echo "  wifi:on|off|scan      — WiFi control"
+        echo "  bt:on|off             — Bluetooth control"
+        echo "  shell:<command>       — Execute shell command"
+        echo "  file:ls:<path>         — List directory"
+        echo "  file:get:<path>        — Download file (base64)"
+        echo "  file:put:<path>:<b64>  — Upload file (base64)"
+        echo "  c6l:<command>          — C6L control via BLE"
+        echo "  mesh:<command>         — Meshtastic mesh relay"
+        echo "  screen                 — Capture screen (base64)"
+        echo "  reboot                 — Reboot device"
+        echo "  shutdown               — Power off device"
+        echo ""
+        echo "Systemd:"
+        echo "  systemctl enable zeroday-ble-remote   — Auto-start on boot"
+        echo "  systemctl start zeroday-ble-remote    — Start service"
+        ;;
+    *)
+        echo "Usage: zeroday-ble-remote {start|stop|restart|status|send <msg>}"
+        echo "       zeroday-ble-remote help  — Full documentation"
+        exit 1
+        ;;
+esac

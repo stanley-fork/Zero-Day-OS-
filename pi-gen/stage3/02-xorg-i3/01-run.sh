@@ -2,7 +2,7 @@
 set -euo pipefail
 # stage3/02-xorg-i3/01-run.sh — Install Xorg + i3 window manager
 
-# Configure Xorg for ST7789V LCD (320x170, framebuffer)
+# Configure Xorg for dual-output (ST7789V LCD + HDMI) with USB keyboard support
 mkdir -p "${ROOTFS_DIR}/etc/X11"
 cat > "${ROOTFS_DIR}/etc/X11/xorg.conf" << 'XORG'
 Section "Device"
@@ -12,20 +12,36 @@ Section "Device"
     Option "ShadowFB" "off"
 EndSection
 
+Section "Device"
+    Identifier "HDMI"
+    Driver "modesetting"
+    Option "kmsdev" "/dev/dri/card0"
+EndSection
+
 Section "Screen"
     Identifier "LCD"
     Device "ST7789V"
     DefaultDepth 16
     SubSection "Display"
         Depth 16
-        # 320x170 native resolution — do NOT hardcode, read from fbdev
         Modes "320x170"
     EndSubSection
 EndSection
 
+Section "Screen"
+    Identifier "HDMI"
+    Device "HDMI"
+    DefaultDepth 24
+    SubSection "Display"
+        Depth 24
+        Modes "1920x1080"
+    EndSubSection
+EndSection
+
 Section "ServerLayout"
-    Identifier "Default"
-    Screen "LCD"
+    Identifier "ZeroDay"
+    Screen 0 "LCD" 0 0
+    Screen 1 "HDMI" RightOf "LCD"
 EndSection
 
 Section "InputClass"
@@ -34,6 +50,15 @@ Section "InputClass"
     MatchDevicePath "/dev/input/by-path/platform-3f804000.i2c-event*"
     Driver "libinput"
     Option "xkb_model" "cardputer"
+    Option "xkb_layout" "us"
+EndSection
+
+Section "InputClass"
+    Identifier "USB Keyboard"
+    MatchIsKeyboard "on"
+    MatchDriver "libinput"
+    MatchUSBID "*:*"
+    Driver "libinput"
     Option "xkb_layout" "us"
 EndSection
 XORG

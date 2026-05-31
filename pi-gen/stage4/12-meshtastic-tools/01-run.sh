@@ -21,7 +21,7 @@ EOF
 mkdir -p "${ROOTFS_DIR}/opt/cardputer/config/meshtastic"
 cat > "${ROOTFS_DIR}/opt/cardputer/config/meshtastic/config.yaml" << 'MESHCONF'
 # ZERO-DAY OS — Meshtastic Configuration
-# Connected via Grove HY2.0-4P port (UART mode)
+# Connected via LoRa hat Grove port (UART mode)
 
 device:
   port: /dev/ttyUSB0

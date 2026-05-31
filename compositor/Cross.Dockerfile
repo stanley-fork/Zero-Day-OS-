@@ -1,8 +1,12 @@
-FROM ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main
+FROM debian:bookworm
 
 RUN dpkg --add-architecture arm64 && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
+        build-essential \
+        gcc-aarch64-linux-gnu \
+        g++-aarch64-linux-gnu \
+        pkg-config \
         libwayland-dev:arm64 \
         libdrm-dev:arm64 \
         libgbm-dev:arm64 \
@@ -15,5 +19,7 @@ RUN dpkg --add-architecture arm64 && \
         libpixman-1-dev:arm64 \
         libsystemd-dev:arm64 \
         wayland-protocols \
-        pkg-config \
+        crossbuild-essential-arm64 \
     && rm -rf /var/lib/apt/lists/*
+
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc

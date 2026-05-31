@@ -1,17 +1,39 @@
 # /etc/sway/config — ZERO-DAY OS Sway Wayland Compositor
-# Lightweight Wayland compositor (alternative to cage kiosk)
-# Use sway when you need multiple windows / workspaces
-# cage is the default (kiosk, single app), sway is the fallback
+# Dual-output: LCD (320x170) primary + HDMI (1080P) external monitor
+#
+# HDMI is auto-detected via hotplug. When connected:
+#   - All apps/windows appear on BOTH displays (mirror mode)
+#   - HDMI runs at 1080P@30fps (RP3A0 bandwidth limit)
+#   - When disconnected, reverts to LCD-only
 #
 # Install: apt install sway
 # Enable: systemctl enable zeroday-gui.service (uses cage)
 #         OR swap ExecStart to use sway instead
 
-# Output configuration for ST7789v3 LCD (320x170)
-output HDMI-A-1 disable
-output * bg /opt/cardputer/bg.png fill
+# ── Output configuration ──
+# LCD: ST7789V 320x170 — always enabled, primary
+output ST7789V {
+    mode 320x170@30Hz
+    pos 0 0
+    bg /opt/cardputer/bg.png fill
+}
 
-# Input configuration for 46-key keyboard
+# HDMI: external monitor — auto-detect, mirror LCD content
+# When no monitor is connected, this output is disabled automatically
+output HDMI-A-1 {
+    mode 1920x1080@30Hz
+    pos 0 0
+    bg /opt/cardputer/bg.png fill
+    disable
+}
+
+# ── HDMI hotplug: enable output when monitor connected ──
+# This is handled by the compositor and udev rules.
+# When HDMI is connected, zeroday-comp/waybar enables HDMI-A-1.
+set $hdmi_state $(cat /sys/class/drm/card0-HDMI-A-1/status 2>/dev/null || echo disconnected)
+
+# ── Input configuration ──
+# Built-in 46-key keyboard (TCA8418) + any USB keyboard
 input * {
     xkb_layout us
     tap enabled
@@ -19,17 +41,18 @@ input * {
     dwt enabled
 }
 
-# No title bars, no gaps, fullscreen everything
+# ── Window management ──
+# No title bars, no gaps — maximize screen space
 font pango:Terminus 8
 default_border none
 default_floating_border none
 hide_edge_borders both
 focus_follows_mouse no
 
-# Start GUI launcher fullscreen
+# ── Startup ──
 exec_always cyber_launcher
 
-# Keybindings (Fn = Alt/Mod1)
+# ── Keybindings (Fn = Alt/Mod1) ──
 set $mod Mod1
 set $term foot
 
@@ -39,6 +62,7 @@ bindsym $mod+space exec stealth-backlight-toggle
 bindsym $mod+Return exec $term
 bindsym $mod+q kill
 bindsym $mod+o exec opencode-session
+bindsym $mod+m exec st -e jellyfin-tv
 
 bindsym $mod+n exec $term -e sudo net-quickscan
 bindsym $mod+b exec $term -e sudo bt-scan
@@ -59,7 +83,11 @@ bindsym $mod+4 workspace 4
 
 bindsym $mod+Shift+q exec swaynag -t warning -m "Press Shift+q to exit sway" -B "Exit" "swaymsg exit"
 
-# No bar — screen too small
+# ── HDMI toggle keybinding ──
+# Fn+Shift+M toggles HDMI output on/off
+bindsym $mod+Shift+m exec swaymsg output HDMI-A-1 toggle
+
+# No bar — screen too small on LCD
 bar {
     mode invisible
 }

@@ -86,7 +86,7 @@ TOOLS = {
         {"name": "Dongle Managed",    "desc": "RTL8821CU → managed mode",        "cmd": "sudo dongle-setup managed",         "need_root": True},
     ],
     "M5MONSTER": [
-        {"name": "JanOS TUI",         "desc": "Full interactive controller",     "cmd": "install-janos run",                 "need_root": False},
+        {"name": "Hub Status",         "desc": "Show Grove topology + status",     "cmd": "monsterctl hub_status",              "need_root": False},
         {"name": "Detect Board",      "desc": "Ping MonsterC5 board",            "cmd": "monsterctl status",                 "need_root": False},
         {"name": "Scan Networks",     "desc": "WiFi scan via ESP32C5",           "cmd": "sudo monsterctl scan",              "need_root": True},
         {"name": "Deauth Attack",     "desc": "Deauthenticate selected APs",     "cmd": "sudo monsterctl deauth",            "need_root": True},
@@ -96,8 +96,13 @@ TOOLS = {
         {"name": "Karma Attack",      "desc": "Respond to probe requests",       "cmd": "sudo monsterctl karma",             "need_root": True,  "args": ["PROBE_N"]},
         {"name": "Wardrive",          "desc": "GPS-tagged WiFi scan",            "cmd": "sudo monsterctl wardrive",          "need_root": True},
         {"name": "Sniffer",           "desc": "WiFi packet sniffer",             "cmd": "sudo monsterctl sniffer",           "need_root": True},
+        {"name": "GPS Passthrough",   "desc": "Stream GPS NMEA data",            "cmd": "monsterctl gps_passthrough",         "need_root": False},
+        {"name": "C6L Zigbee Scan",   "desc": "Zigbee scan via C6L",             "cmd": "c6l-ctl zigbee scan",                "need_root": False},
+        {"name": "C6L BLE Scan",      "desc": "BLE scan via C6L",               "cmd": "c6l-ctl ble scan",                   "need_root": False},
+        {"name": "Mesh Start",       "desc": "Start Meshtastic node",            "cmd": "monsterctl mesh start",              "need_root": False},
+        {"name": "Mesh Send",         "desc": "Send mesh message",               "cmd": "monsterctl mesh send",               "need_root": False,  "args": ["DEST", "MSG"]},
         {"name": "Stop Attack",       "desc": "Stop current MonsterC5 attack",   "cmd": "monsterctl stop",                   "need_root": False},
-        {"name": "Install JanOS-app", "desc": "Install interactive TUI",         "cmd": "install-janos install",             "need_root": True},
+        {"name": "Flash ZERO-DAY",    "desc": "Flash custom firmware",           "cmd": "sudo monsterctl flash local",        "need_root": True},
     ],
     "NET": [
         {"name": "Discover Hosts",    "desc": "ARP scan + ping sweep",           "cmd": "sudo net-discover eth0",            "need_root": True,  "args": ["SUBNET"]},

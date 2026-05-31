@@ -6,9 +6,9 @@
 
 **The first penetration testing OS built for a credit-card-sized computer you can hold in one hand.**
 
-ZERO-DAY OS v4.2.2 turns the M5Stack Cardputer Zero — a quad-core ARM64 box with WiFi, BT, IR, a camera, a battery, and a built-in keyboard — into a pocketable offensive security weapon. Every byte of this distro is optimized for the constraints of 512MB RAM and a 1.9" screen. No desktop. No bloat. No compromises. Powered by a custom Rust Wayland compositor and terminal emulator, both built for the hardware.
+ZERO-DAY OS v4.3.0 turns the M5Stack Cardputer Zero — a quad-core ARM64 box with WiFi, BT, IR, a camera, a battery, and a built-in keyboard — into a pocketable offensive security weapon. Every byte of this distro is optimized for the constraints of 512MB RAM and a 1.9" screen. No desktop. No bloat. No compromises. Powered by a custom Rust Wayland compositor and terminal emulator, both built for the hardware.
 
-[![Release v4.2.2](https://img.shields.io/github/v/release/jayis1/Zero-Day-OS-?label=latest%20release)](https://github.com/jayis1/Zero-Day-OS-/releases/latest)
+[![Release v4.3.0](https://img.shields.io/github/v/release/jayis1/Zero-Day-OS-?label=latest%20release)](https://github.com/jayis1/Zero-Day-OS-/releases/latest)
 
 ---
 
@@ -47,7 +47,7 @@ You can install Kali on a Raspberry Pi. That's not what this is.
 | **BT/BLE** | Bluetooth 4.2 + BLE (UART) |
 | **IR** | Transceiver (GPIO) |
 | **Camera** | IMX219 8MP (CSI) |
-| **USB** | USB-C device + USB-A host |
+| **USB** | USB-C device + USB-A host (keyboard/mouse support) |
 | **Expansion** | Grove (I2C/UART) + 14-pin GPIO header |
 
 Device tree: [`cardputerzero-overlay.dts`](overlays/cardputerzero-overlay.dts) — single comprehensive overlay.
@@ -59,7 +59,7 @@ Device tree: [`cardputerzero-overlay.dts`](overlays/cardputerzero-overlay.dts) �
 | Constraint | Our Solution |
 |---|---|
 | **512MB RAM** | `musl` where possible, `dropbear` over `sshd`, no `postgres`, no heavy daemons. Metasploit excluded. `zeroday-comp`: ~2MB vs cage ~3MB vs sway ~15MB vs Xorg ~30MB |
-| **1.9" 320x170 display** | `zeroday-comp` — custom Rust Wayland compositor with Fn-key bindings, DRM/KMS direct rendering |
+| **1.9" 320x170 display** | `zeroday-comp` — custom Rust Wayland compositor with Fn-key bindings, DRM/KMS dual-output (LCD + HDMI mirror) |
 | **46-key matrix keyboard** | `Fn` Omni-Key system. Every tool is 2 keypresses from anywhere. Compositor-level key handling. |
 | **1500mAh battery** | Three power profiles (performance / balanced / stealth). `autosleep`. Radio toggle hotkeys. |
 | **No mouse, ever** | `i3` tiling WM backend. tmux splits. Arrow-key everything. |
@@ -97,11 +97,12 @@ Device tree: [`cardputerzero-overlay.dts`](overlays/cardputerzero-overlay.dts) �
  │                                                          │
  │   ┌─────────────────────────────────────────────────┐    │
  │   │   zeroday-comp (Rust Wayland compositor, ~2MB)   │    │
- │   │   · DRM/KMS direct rendering → ST7789V LCD      │    │
- │   │   · Fn-key compositor bindings (panic/stealth)   │    │
- │   │   · Single-client kiosk for cyber_launcher       │    │
- │   │   · Automatic backlight & power management       │    │
- │   │   · Clean signal handling (SIGTERM → children)   │    │
+│   │   · DRM/KMS dual-output → ST7789V LCD + HDMI-A-1 mirror  │    │
+│   │   · HDMI hotplug auto-detect (DRM uevent netlink)            │    │
+│   │   · Fn-key compositor bindings (panic/stealth/media)        │    │
+│   │   · Single-client kiosk for cyber_launcher                 │    │
+│   │   · Automatic backlight & power management                  │    │
+│   │   · SIGTERM → children, SIGUSR1 → HDMI reconfig, SIGUSR2 → rescan │
  │   └─────────────────────────────────────────────────┘    │
  │                                                          │
  │   ┌───────────┐  ┌───────────┐  ┌───────────────────┐   │
@@ -191,6 +192,15 @@ Every tool chosen for **sub-100MB RAM at idle**. No fat daemons. No database ser
 | `sudo ble-spam swift_pair` | Wall of Flippers: Swift Pair notifications |
 | `sudo ble-spam air_pod` | Wall of Flippers: AirPods pairing spam |
 | `sudo ble-spam all` | Cycle all BLE spam attacks |
+| `zeroday-ble-remote start` | Start BLE Remote API (Flipper Zero-style companion) |
+| `zeroday-ble-remote status` | Show BLE Remote API status |
+| `zeroday-ble-remote stop` | Stop BLE Remote API |
+
+### BLE Remote — Android/iOS Companion
+
+Flipper Zero-style BLE GATT server for remote control from a companion app. Advertises as "Cardputer-Zero" with service UUID `0000fe5e`. Provides shell access, file transfer, device dashboard, panic/stealth quick actions, C6L control, and mesh relay — all over BLE.
+
+6 GATT characteristics: Command RX/TX (shell), File RX/TX (transfer), Status (dashboard), Screen (capture). See `scripts/hardware/ble-remote/ANDROID_API.md` for the full app protocol.
 
 ### Captive Portal
 | Command | Description |
@@ -250,14 +260,25 @@ Every tool chosen for **sub-100MB RAM at idle**. No fat daemons. No database ser
 | `monsterctl hosts` | Show discovered hosts |
 | `monsterctl wifi_connect "SSID" "pass"` | Connect board to WiFi |
 | `monsterctl wifi_disconnect` | Disconnect board from WiFi |
+| `monsterctl gps_passthrough` | Stream GPS NMEA from AT6558 |
+| `monsterctl c6l_cmd <cmd>` | Send command to C6L via MonsterC5 |
+| `monsterctl mesh start` | Start Meshtastic LoRa mesh node |
+| `monsterctl mesh send <dest> <msg>` | Send mesh message |
+| `monsterctl hub_status` | Show Grove topology and passthrough status |
 
-### JanOS Interactive Controller
+### C6L (Zigbee/Thread/BLE) via MonsterC5 or Direct BLE
 | Command | Description |
 |---|---|
-| `install-janos install` | Install JanOS-app TUI |
-| `install-janos status` | Check installation status |
-| `install-janos run [port]` | Launch interactive TUI |
-| `install-janos update` | Pull latest from GitHub |
+| `c6l-ctl zigbee scan` | Scan Zigbee/Thread networks |
+| `c6l-ctl zigbee sniffer` | Capture Zigbee packets |
+| `c6l-ctl ble scan` | BLE 5 scan via C6L |
+| `c6l-ctl lcd text "hello"` | Display text on C6L LCD |
+| `c6l-ctl ble connect` | Pair Cardputer Zero to C6L via BLE |
+| `c6l-ctl ble pair` | Scan and pair C6L via direct BLE (no MonsterC5) |
+
+The C6L can be reached two ways:
+1. **Via MonsterC5** (default): `monsterctl c6l_cmd <cmd>` — routed through Grove OUT port
+2. **Direct BLE**: Cardputer Zero's BT 4.2 connects directly to C6L's BLE 5.0 — no MonsterC5 needed. Use `C6L_MODE=ble c6l-ctl <cmd>` for direct BLE communication, including Meshtastic meshchat over BLE
 
 ### Ragnar Reconnaissance
 | Command | Description |
@@ -297,11 +318,17 @@ Every tool chosen for **sub-100MB RAM at idle**. No fat daemons. No database ser
 | `mesh-chat listen <channel>` | Continuous message monitoring |
 | `mesh-chat nodes` | List discovered nodes |
 | `mesh-chat info` | Show local node status |
+| `mesh-chat ble` | Connect to C6L/Meshtastic node via BLE |
 | `mesh-setup install` | Full Meshtastic setup (CLI + dependencies) |
 | `mesh-setup init` | Initialize and configure LoRa node |
 | `mesh-setup info` | Node info, battery, signal, GPS |
 | `mesh-setup send <msg> [node]` | Send encrypted message |
 | `mesh-setup relay` | Enable mesh relay / internet bridge |
+
+Meshtastic can connect three ways:
+1. **LoRa hat** (UART) on Cardputer Zero's expansion port — direct serial
+2. **MonsterC5** LoRa radio — via `monsterctl mesh start`
+3. **C6L via BLE** — Cardputer Zero BT 4.2 → C6L BLE 5.0 — wireless, no cables needed
 
 ### IR — Infrared Hacking
 | Command | Description |
@@ -328,6 +355,17 @@ Every tool chosen for **sub-100MB RAM at idle**. No fat daemons. No database ser
 | `yt trending` | Browse trending videos |
 | `yt history` | Show play history |
 | `export ZERODAY_DISPLAY=hdmi` | Enable HDMI video output for playback |
+
+### Jellyfin TV
+| Command | Description |
+|---|---|
+| `jellyfin-tv` | Interactive menu (auto-detects Jellyfin Desktop) |
+| `jellyfin-tv connect <url>` | Connect to Jellyfin server |
+| `jellyfin-tv cast` | Start cast receiver (mpv-shim) |
+| `jellyfin-tv play <url>` | Play URL directly (YouTube, etc.) |
+| `jellyfin-tv local` | Play local media files |
+| `jellyfin-tv off` | Stop all playback |
+| `jellyfinmediaplayer` | Full Qt5 desktop client (best on HDMI) |
 
 ### Gaming — DOOM
 | Command | Description |
@@ -358,7 +396,24 @@ Every tool chosen for **sub-100MB RAM at idle**. No fat daemons. No database ser
 | `sudo cardputer-battery` | BQ27220 fuel gauge readout |
 | `sudo dongle-setup <cmd>` | RTL8821CU dongle manager |
 
-### Terminal — zeroday-term
+### File Explorer — zeroday-fm
+
+ZERO-DAY OS includes **zeroday-fm**, a custom TUI file explorer built in Rust and optimized for the Cardputer Zero's 1.9" display and 46-key keyboard.
+
+| Feature | Description |
+|---|---|
+| **Navigation** | Arrow keys / j/k, Enter=open, Backspace=back, Ctrl+O/Ctrl+I=history |
+| **File ops** | Ctrl+Y copy, Ctrl+X cut, Ctrl+V paste, Ctrl+D delete, Ctrl+R rename, Ctrl+N mkdir |
+| **Hex viewer** | Alt+H opens hex dump for any file, scroll with j/k/PgUp/PgDn |
+| **Metadata** | Alt+M shows permissions, size, owner, timestamps, symlink targets |
+| **Search** | Ctrl+F or / for regex search, Alt+N/Alt+P for next/prev result |
+| **Bookmarks** | Alt+B opens bookmark list (Home, Root, Loot, Config, Capture, /tmp) |
+| **Archives** | Ctrl+Z creates zip from marked files, Ctrl+E extracts zip |
+| **Marking** | Space=mark, Ctrl+A=mark all, Ctrl+U=unmark all |
+| **Sorting** | Ctrl+S cycles: Type→Name→Size→Date, `.` toggles hidden files |
+| **Tiny footprint** | ~1.9MB stripped binary, no desktop dependencies |
+
+Config: `/etc/zeroday/fm.env` — show hidden, sort order, start directory.
 
 ZERO-DAY OS includes **zeroday-term**, a custom terminal emulator built in Rust and optimized for the Cardputer Zero's 1.9" display and 46-key keyboard. It replaces `st` as the primary terminal for wayland/GUI mode and falls back to `st` under X11.
 
@@ -376,6 +431,52 @@ ZERO-DAY OS includes **zeroday-term**, a custom terminal emulator built in Rust 
 Installed to `/usr/local/bin/zeroday-term` with symlink `st → zeroday-term` for compatibility. Falls back to `stterm` if zeroday-term is unavailable.
 
 Config: `/etc/zeroday/term.env` — font size (default 8), dimensions (40x19), shell, status bar toggle.
+
+### Trail — Breadcrumb Navigation
+
+ZERO-DAY OS includes **zeroday-trail**, a WiFi fingerprinting navigation daemon that drops breadcrumbs as you walk and guides you back to your exit. No GPS needed — works via WiFi AP signal matching.
+
+| Feature | Description |
+|---|---|
+| **Drop mode** | Scans WiFi APs every 15s, stores fingerprint snapshots |
+| **Waypoint tags** | `trail-ctl mark "exit"` tags critical locations |
+| **Exit guidance** | Compares current fingerprint to breadcrumbs, shows direction |
+| **Evil twin detection** | Overwatch detects APs mimicking your connected network |
+| **New AP watch** | Alerts on APs not in your learned baseline |
+| **OLED output** | Direction arrows on M5Stack SH1107 (128x64) |
+| **GPS integration** | When GPS module connected, adds lat/lon to breadcrumbs |
+| **GPX export** | `trail-ctl dump` exports waypoints with GPS coordinates |
+| **~1.1MB stripped** | Rust binary, panic=abort, LTO, opt-level=z |
+
+### M5Stack GPS Module v1.1
+
+AT6558 GNSS chip (GPS/BDS/GLONASS/GALILEO/QZSS) with AT3335 patch antenna. Connects via Grove HY2.0-4P in UART mode.
+
+| Command | Description |
+|---|---|
+| `gps-ctl start` | Start GPS daemon |
+| `gps-ctl status` | Show fix info and satellites |
+| `gps-ctl location` | Print lat/lon/alt |
+| `gps-ctl save "exit"` | Save waypoint with GPS coordinates |
+| `gps-ctl goto "exit"` | Show direction and distance to waypoint |
+| `gps-ctl wardrive` | GPS + WiFi scan wardriving |
+| `gps-ctl probe` | Detect GPS module on UART |
+
+### M5Stack OLED Unit SH1107
+
+1.3" 128x64 monochrome OLED on Grove I2C (address 0x3C). Used for status panels, Trail navigation hints, and Overwatch alerts.
+
+| Command | Description |
+|---|---|
+| `oled-ctl trail` | Show Trail breadcrumb direction |
+| `oled-ctl overwatch` | Show threat level |
+| `oled-ctl sysinfo` | CPU/mem/disk stats |
+| `oled-ctl battery` | Battery percentage |
+| `oled-ctl clock` | Time display |
+| `oled-ctl text "msg"` | Custom text |
+| `oled-ctl daemon` | Rotating status display |
+
+> **Grove port sharing:** GPS (UART), SH1107 OLED (I2C), PN532 NFC (I2C), and Meshtastic LoRa (UART) all share the Grove port. Only one UART or one I2C device at a time.
 
 ### Reverse Shells & Exploitation
 | Command | Description |
@@ -411,6 +512,10 @@ Config: `/etc/zeroday/term.env` — font size (default 8), dimensions (40x19), s
 ### Entertainment
 | Command | Description |
 |---|---|
+| `jellyfin-tv` | Jellyfin TV Media Box (interactive TUI menu) |
+| `jellyfin-tv connect <url>` | Connect to Jellyfin server |
+| `jellyfin-tv cast` | Start cast receiver via mpv-shim |
+| `jellyfinmediaplayer` | Jellyfin Desktop (Qt5 GUI client, HDMI 1080P) |
 | `webradio-danish [STATION]` | Stream Danish web radio |
 | `music-player [dir]` | Play local MP3/FLAC files |
 | `yt search <query>` | YouTube search and play |
@@ -431,10 +536,12 @@ ZERO-DAY OS uses **zeroday-comp**, a custom Rust Wayland compositor purpose-buil
 
 ### zeroday-comp Features
 - **Single-client kiosk**: No window management overhead — runs `cyber_launcher` fullscreen
-- **Native Fn-key bindings**: Fn+P (panic), Fn+Space (stealth/backlight), Fn+Tab (launcher), Fn+Q (kill), plus all quick-launch combos — handled at the compositor level
-- **DRM/KMS direct rendering**: Zero-copy GPU path for ST7789V LCD (WIP — currently launches client directly)
+- **Native Fn-key bindings**: Fn+P (panic), Fn+Space (stealth/backlight), Fn+Tab (launcher), Fn+Q (kill), Fn+M (Jellyfin TV), plus all quick-launch combos — handled at the compositor level
+- **Dual-output DRM/KMS**: Renders to ST7789V LCD (320x170@30fps) and HDMI-A-1 (1920x1080@30fps) simultaneously in mirror mode
+- **HDMI hotplug**: `hdmi.rs` thread monitors DRM uevent netlink + sysfs — adds/removes HDMI output on plug/unplug without restart. `99-hdmi-hotplug.rules` udev + `hdmi-hotplug-notify` sends SIGUSR1 to compositor
+- **USB hotplug**: `70-usb-input.rules` + `usb-input-notify` sends SIGUSR2 to compositor for keyboard/mouse rescan
+- **Signal handlers**: SIGTERM/SIGHUP → kill children and clean exit; SIGUSR1 → reconfigure HDMI output; SIGUSR2 → rescan input devices
 - **Sub-2MB RAM**: Written in Rust, stripped release binary (~1.0MB), no desktop shell protocol overhead
-- **Clean shutdown**: SIGTERM kills child processes (cyber_launcher, zeroday-term) before compositor exit
 - **Automatic backlight control**: Fn+Space toggles LCD backlight for stealth mode
 - **Fallback chain**: If zeroday-comp crashes, systemd automatically starts cage; if cage fails, Xorg+i3 takes over
 
@@ -446,9 +553,20 @@ ZERO-DAY OS uses **zeroday-comp**, a custom Rust Wayland compositor purpose-buil
 - **vte-based terminal parser**: Full xterm-256color, proper escape sequences
 - **PTY management**: portable-pty for proper process groups and signal handling
 
+### zeroday-fm Features
+- **TUI file explorer**: Built in Rust with crossterm — works on any terminal, no desktop required
+- **Optimized for 46-key keyboard**: j/k navigation, Ctrl+key shortcuts for all operations
+- **Hex viewer**: Alt+H opens hex dump for any file, scroll with j/k/PgUp/PgDn
+- **Metadata**: Alt+M shows permissions, size, owner, timestamps, symlink targets
+- **Search**: Ctrl+F regex search, recursive file finding
+- **Bookmarks**: Alt+B — Home, Root, Loot, Config, Capture, /tmp
+- **Archives**: Ctrl+Z creates zip from marked files, Ctrl+E extracts
+- **File ops**: Copy/Cut/Paste, Delete, Rename, Mkdir, Mark select
+- **~1.9MB stripped**: Rust binary, panic=abort, LTO, opt-level=z
+
 If zeroday-comp and cage both fail to start, `zeroday-tui.service` automatically takes over with Xorg + i3 + stterm.
 
-Set `ZERODAY_DISPLAY=hdmi` for fullscreen video/gaming on external HDMI output.
+**HDMI dual-output**: When an HDMI monitor is plugged in, `zeroday-comp` automatically mirrors output to 1920x1080@30fps while keeping the LCD active. This is handled by `hdmi.rs` (DRM uevent netlink monitoring) + `99-hdmi-hotplug.rules` udev rule. PulseAudio auto-switches audio to HDMI. All apps work on both screens simultaneously — no manual env var needed.
 
 ---
 
@@ -477,6 +595,7 @@ Set `ZERODAY_DISPLAY=hdmi` for fullscreen video/gaming on external HDMI output.
  │  Fn + R     → Retro games                    │
  │  Fn + Y     → YouTube search                │
  │  Fn + U     → WebUI dashboard               │
+ │  Fn + M     → Jellyfin TV menu               │
  └─────────────────────────────────────────────┘
 ```
 
@@ -486,7 +605,7 @@ Key bindings are intercepted by the compositor's input handler (`/compositor/src
 
 ## Building the OS Image
 
-Built from scratch using Docker for full reproducibility. aarch64 cross-compilation via QEMU. The `zeroday-comp` Rust compositor and `zeroday-term` Rust terminal emulator are cross-compiled on the host and installed as pre-built binaries into the image.
+Built from scratch using Docker for full reproducibility. aarch64 cross-compilation via QEMU. The `zeroday-comp` Rust compositor, `zeroday-term` terminal emulator, and `zeroday-fm` file explorer are cross-compiled on the host and installed as pre-built binaries into the image.
 
 ### Prerequisites (x86 Linux Host)
 
@@ -506,7 +625,7 @@ sudo systemctl enable --now docker
 # Install cross-rs (Docker-based cross-compilation)
 cargo install cross
 
-# Build compositor (currently a stub launcher — DRM backend WIP)
+# Build compositor (dual-output Wayland compositor with HDMI hotplug)
 cd compositor
 make deps          # Build custom cross-rs Docker image with Wayland/DRM libs
 make cross-build   # Cross-compile for aarch64
@@ -515,9 +634,19 @@ make cross-build   # Cross-compile for aarch64
 cd ../terminal
 make cross-build   # Cross-compile zeroday-term for aarch64
 
+# Build file explorer
+cd ../explorer
+make cross-build   # Cross-compile zeroday-fm for aarch64
+
+# Build breadcrumb navigation daemon
+cd ../trail
+make cross-build   # Cross-compile zeroday-trail for aarch64
+
 # Binaries land in:
 #   compositor/target/aarch64-unknown-linux-gnu/release/zeroday-comp  (~1.0MB)
 #   terminal/target/aarch64-unknown-linux-gnu/release/zeroday-term     (~1.2MB)
+#   explorer/target/aarch64-unknown-linux-gnu/release/zeroday-fm      (~1.9MB)
+#   trail/target/aarch64-unknown-linux-gnu/release/zeroday-trail      (~1.1MB)
 ```
 
 ### Build OS Image
@@ -527,7 +656,7 @@ cd pi-gen
 chmod +x build-docker.sh build.sh
 ./build-docker.sh
 # ~25-30min. Downloads Debian arm64 base + Kali tools.
-# Pre-built zeroday-comp and zeroday-term binaries are copied into the rootfs.
+# Pre-built zeroday-comp, zeroday-term, zeroday-fm, and zeroday-trail binaries are copied into the rootfs.
 ```
 
 Retrieve `.img` from `pi-gen/deploy/` and flash to a **microSD card**:
@@ -549,6 +678,12 @@ To cross-compile `zeroday-term` separately:
 ```bash
 cd terminal
 make cross-build   # Cross-compile for aarch64 (~1.2MB stripped)
+```
+
+To cross-compile `zeroday-fm` separately:
+```bash
+cd explorer
+make cross-build   # Cross-compile for aarch64 (~1.9MB stripped)
 ```
 
 ### Rebuilding
@@ -592,7 +727,7 @@ ZERO-DAY OS is a professional tool for **authorized security testing**. The pani
 - **portable-pty** — Cross-platform PTY library (zeroday-term backend)
 - **vte-rs** — Terminal escape sequence parser (zeroday-term)
 - **OpenCode** — On-device AI-assisted code editor (v1.14.49)
-- **dianjixz** — CM0 firmware reference
+- **Raspberry Pi Ltd** — Official raspberrypi-kernel (CVE-patched)
 - **Offensive Security** — Training and tool ecosystem
 - **The Flipper Zero community** — TUI design inspiration
 

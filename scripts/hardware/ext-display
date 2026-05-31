@@ -1,0 +1,483 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/ext-display
+# External display manager for ZERO-DAY OS
+# Supports: HDMI monitors, SPI TFT (ILI9341, ST7789),
+#           M5Stack OLED Unit SH1107 (1.3" 128x64, Grove I2C),
+#           USB display adapters (DisplayLink)
+#
+# The Cardputer Zero has a 1.9" internal ST7789V LCD (320x170).
+# External displays connect via:
+#   1. HDMI — mirror or extend the internal display
+#   2. SPI TFT on 14-pin ExtPort (ILI9341, ST7789)
+#   3. M5Stack OLED Unit SH1107 via Grove I2C
+#   4. USB DisplayLink adapters
+#
+# The M5Stack OLED Unit SH1107 is a 1.3" 128x64 monochrome OLED
+# on I2C address 0x3C. Perfect for status panels, sensor readouts,
+# breadcrumb navigation hints, and Overwatch threat alerts.
+#
+# Usage:
+#   ext-display status              Show all connected displays
+#   ext-display hdmi on             Enable HDMI output (mirror or extend)
+#   ext-display hdmi off            Disable HDMI output
+#   ext-display hdmi mirror         Mirror internal LCD to HDMI
+#   ext-display hdmi extend         Extend desktop to HDMI (right of internal)
+#   ext-display hdmi extend-left    Extend desktop to HDMI (left of internal)
+#   ext-display hdmi resolution     Set HDMI resolution (720p, 1080p, custom)
+#   ext-display tft on              Enable SPI TFT display (ILI9341)
+#   ext-display tft off             Disable SPI TFT display
+#   ext-display unit-lcd on         Enable M5Stack Unit LCD (I2C/USB)
+#   ext-display unit-lcd off        Disable M5Stack Unit LCD
+#   ext-display rotate <degrees>    Rotate display (0, 90, 180, 270)
+#   ext-display brightness <n>      Set backlight brightness (0-100)
+#   ext-display info                Show detailed display information
+
+INTERNAL_RES="320x170"
+INTERNAL_LCD="st7789v"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+detect_displays() {
+    echo -e "${BOLD}Connected Displays:${NC}"
+    echo ""
+    
+    echo "  ${CYAN}Internal LCD (ST7789V):${NC}"
+    if [ -d "/sys/class/backlight/rpi_backlight" ]; then
+        local bl=$(cat /sys/class/backlight/rpi_backlight/brightness 2>/dev/null || echo "?")
+        local bl_max=$(cat /sys/class/backlight/rpi_backlight/max_brightness 2>/dev/null || echo "?")
+        echo "    Resolution:  ${INTERNAL_RES}"
+        echo "    Backlight:   ${bl}/${bl_max}"
+    elif [ -d "/sys/class/backlight" ]; then
+        for bl in /sys/class/backlight/*; do
+            local name=$(basename "$bl")
+            local bright=$(cat "$bl/brightness" 2>/dev/null || echo "?")
+            local max=$(cat "$bl/max_brightness" 2>/dev/null || echo "?")
+            echo "    Resolution:  ${INTERNAL_RES}"
+            echo "    Backlight:   ${bright}/${max} (${name})"
+        done
+    else
+        echo "    Resolution:  ${INTERNAL_RES}"
+        echo "    Backlight:   unknown"
+    fi
+    
+    echo ""
+    echo "  ${CYAN}HDMI:${NC}"
+    if command -v tvservice >/dev/null 2>&1; then
+        local hdmi_status=$(tvservice -s 2>/dev/null || echo "unknown")
+        echo "    Status:      ${hdmi_status}"
+    elif [ -d "/sys/class/drm/card0-HDMI-A-1" ]; then
+        local status=$(cat /sys/class/drm/card0-HDMI-A-1/status 2>/dev/null || echo "unknown")
+        local modes=$(cat /sys/class/drm/card0-HDMI-A-1/modes 2>/dev/null | head -5 | tr '\n' ', ' || echo "unknown")
+        echo "    Status:      ${status}"
+        echo "    Modes:       ${modes}"
+    else
+        echo "    Status:      not detected"
+    fi
+    
+    echo ""
+    echo "  ${CYAN}SPI TFT (14-Pin ExtPort):${NC}"
+    if [ -d "/sys/class/spi_master" ]; then
+        echo "    SPI bus:     available"
+        if ls /dev/spidev* >/dev/null 2>&1; then
+            echo "    Devices:     $(ls /dev/spidev* 2>/dev/null | tr '\n' ' ')"
+        else
+            echo "    Devices:     none loaded"
+        fi
+    else
+        echo "    Status:      SPI not available"
+    fi
+    
+    echo ""
+    echo "  ${CYAN}DRM/KMS framebuffers:${NC}"
+    for fb in /dev/fb*; do
+        if [ -e "$fb" ]; then
+            local name=$(basename "$fb")
+            local res=$(fbset -i 2>/dev/null | grep -m1 "mode" || echo "?")
+            echo "    ${name}:      ${res}"
+        fi
+    done 2>/dev/null || echo "    No framebuffers found"
+}
+
+hdmi_on() {
+    echo -e "${BOLD}Enabling HDMI output...${NC}"
+    if command -v tvservice >/dev/null 2>&1; then
+        tvservice -p 2>/dev/null || true
+    fi
+    
+    if command -v xrandr >/dev/null 2>&1; then
+        xrandr --output HDMI-1 --auto 2>/dev/null || \
+        xrandr --output HDMI-A-1 --auto 2>/dev/null || true
+        echo -e "${GREEN}HDMI enabled (auto resolution)${NC}"
+    else
+        echo -e "${GREEN}HDMI enabled${NC}"
+        echo "  Use 'ext-display hdmi mirror' or 'ext-display hdmi extend' for layout"
+    fi
+}
+
+hdmi_off() {
+    echo -e "${BOLD}Disabling HDMI output...${NC}"
+    if command -v xrandr >/dev/null 2>&1; then
+        xrandr --output HDMI-1 --off 2>/dev/null || \
+        xrandr --output HDMI-A-1 --off 2>/dev/null || true
+    fi
+    if command -v tvservice >/dev/null 2>&1; then
+        tvservice -o 2>/dev/null || true
+    fi
+    echo -e "${GREEN}HDMI disabled${NC}"
+}
+
+hdmi_mirror() {
+    echo -e "${BOLD}Setting HDMI to mirror mode...${NC}"
+    if command -v xrandr >/dev/null 2>&1; then
+        xrandr --output HDMI-1 --same-as DPI-1 2>/dev/null || \
+        xrandr --output HDMI-1 --same-as DSI-1 2>/dev/null || \
+        xrandr --output HDMI-1 --same-as LCD-1 2>/dev/null || \
+        xrandr --output HDMI-A-1 --same-as DPI-1 2>/dev/null || \
+        xrandr --output HDMI-1 --auto 2>/dev/null || true
+        echo -e "${GREEN}HDMI mirror mode active${NC}"
+    else
+        echo "  Framebuffer mirroring (no X):"
+        cat /dev/fb0 > /dev/fb1 2>/dev/null &
+        echo -e "${GREEN}HDMI mirror mode active (fb copy)${NC}"
+    fi
+}
+
+hdmi_extend() {
+    local direction="${1:-right}"
+    echo -e "${BOLD}Setting HDMI to extend mode (${direction})...${NC}"
+    if command -v xrandr >/dev/null 2>&1; then
+        local internal=$(xrandr 2>/dev/null | grep " connected" | grep -v HDMI | head -1 | awk '{print $1}')
+        local external=$(xrandr 2>/dev/null | grep "HDMI" | grep " connected" | head -1 | awk '{print $1}')
+        
+        if [ -z "$internal" ] || [ -z "$external" ]; then
+            echo -e "${RED}Cannot detect display outputs${NC}"
+            echo "  Run 'ext-display status' to check"
+            return 1
+        fi
+        
+        if [ "$direction" = "left" ]; then
+            xrandr --output "$external" --left-of "$internal" --auto 2>/dev/null || true
+        else
+            xrandr --output "$external" --right-of "$internal" --auto 2>/dev/null || true
+        fi
+        echo -e "${GREEN}HDMI extend ${direction} mode active${NC}"
+        echo "  Internal: ${internal}"
+        echo "  External: ${external}"
+    else
+        echo -e "${YELLOW}X11 required for extend mode${NC}"
+        echo "  i3 will auto-detect the new output"
+    fi
+}
+
+hdmi_resolution() {
+    local res="${1:-720p}"
+    case "$res" in
+        480p)  xrandr --output HDMI-1 --mode 640x480 2>/dev/null || xrandr --output HDMI-A-1 --mode 640x480 2>/dev/null || true ;;
+        720p)  xrandr --output HDMI-1 --mode 1280x720 2>/dev/null || xrandr --output HDMI-A-1 --mode 1280x720 2>/dev/null || true ;;
+        1080p) xrandr --output HDMI-1 --mode 1920x1080 2>/dev/null || xrandr --output HDMI-A-1 --mode 1920x1080 2>/dev/null || true ;;
+        *)     xrandr --output HDMI-1 --mode "$res" 2>/dev/null || xrandr --output HDMI-A-1 --mode "$res" 2>/dev/null || true ;;
+    esac
+    echo -e "${GREEN}HDMI resolution set to ${res}${NC}"
+}
+
+tft_on() {
+    echo -e "${BOLD}Enabling SPI TFT display...${NC}"
+    
+    local spi_dev=""
+    for d in /dev/spidev0.0 /dev/spidev0.1 /dev/spidev1.0; do
+        if [ -e "$d" ]; then spi_dev="$d"; break; fi
+    done
+    
+    if [ -z "$spi_dev" ]; then
+        echo -e "${YELLOW}Loading SPI modules...${NC}"
+        modprobe spi_bcm2835 2>/dev/null || true
+        modprobe spidev 2>/dev/null || true
+        sleep 1
+        for d in /dev/spidev0.0 /dev/spidev0.1 /dev/spidev1.0; do
+            if [ -e "$d" ]; then spi_dev="$d"; break; fi
+        done
+    fi
+    
+    if [ -z "$spi_dev" ]; then
+        echo -e "${RED}No SPI device found${NC}"
+        echo "  Check device tree overlay for SPI TFT"
+        echo "  Supported TFT displays on 14-Pin ExtPort:"
+        echo "    ILI9341 2.8\" 240x320 — SPI"
+        echo "    ST7789 1.54\" 240x240 — SPI"
+        echo "    SSD1306 0.96\" 128x64 — I2C (on Grove)"
+        echo ""
+        echo "  Wiring (14-Pin ExtPort):"
+        echo "    TFT Pin      Cardputer Zero ExtPort"
+        echo "    ────────     ──────────────────────"
+        echo "    VCC          Pin 1 (3.3V) or Pin 14 (5V)"
+        echo "    GND          Pin 2 (GND)"
+        echo "    MOSI         Pin 4 (SPI0 MOSI)"
+        echo "    MISO         Pin 5 (SPI0 MISO)"
+        echo "    SCK          Pin 6 (SPI0 SCLK)"
+        echo "    CS           Pin 7 (SPI0 CE0)"
+        echo "    DC           Pin 9 (GPIO)"
+        echo "    RST          Pin 10 (GPIO)"
+        echo "    BL           Pin 11 (GPIO, backlight)"
+        return 1
+    fi
+    
+    echo -e "${GREEN}SPI TFT interface available at ${spi_dev}${NC}"
+    echo "  To activate a specific display, add the appropriate"
+    echo "  device tree overlay to /boot/config.txt:"
+    echo "    dtoverlay=fbtft,ili9341      # ILI9341 2.8\" 240x320"
+    echo "    dtoverlay=fbtft,st7789v      # ST7789 1.54\" 240x240"
+    echo "    dtoverlay=fbtft,ssd1306      # SSD1306 0.96\" 128x64"
+    
+    if command -v fbtft_device >/dev/null 2>&1 || [ -d "/sys/class/graphics/fb1" ]; then
+        echo -e "${GREEN}TFT display initialized${NC}"
+    else
+        echo -e "${YELLOW}TFT display requires dtoverlay in /boot/config.txt${NC}"
+    fi
+}
+
+tft_off() {
+    echo -e "${YELLOW}TFT display disabled${NC}"
+    echo "  Remove dtoverlay from /boot/config.txt and reboot"
+}
+
+unit_lcd_on() {
+    echo -e "${BOLD}Enabling M5Stack OLED Unit SH1107...${NC}"
+    
+    local i2c_bus=""
+    local i2c_num=1
+    for bus in /dev/i2c-1 /dev/i2c-0; do
+        if [ -e "$bus" ]; then i2c_bus="$bus"; i2c_num=$(echo "$bus" | grep -o '[0-9]*'); break; fi
+    done
+    
+    if [ -z "$i2c_bus" ]; then
+        echo -e "${YELLOW}Loading I2C modules...${NC}"
+        modprobe i2c-bcm2835 2>/dev/null || true
+        modprobe i2c-dev 2>/dev/null || true
+        sleep 1
+        for bus in /dev/i2c-1 /dev/i2c-0; do
+            if [ -e "$bus" ]; then i2c_bus="$bus"; i2c_num=$(echo "$bus" | grep -o '[0-9]*'); break; fi
+        done
+    fi
+    
+    if [ -z "$i2c_bus" ]; then
+        echo -e "${RED}No I2C bus found${NC}"
+        echo "  Enable I2C: sudo raspi-config → Interface Options → I2C"
+        return 1
+    fi
+    
+    echo -e "  Scanning I2C bus ${i2c_num} for SH1107..."
+    local sh1107_found=false
+    
+    if i2cdetect -y "$i2c_num" 0x3c 0x3c 2>/dev/null | grep -q "3c"; then
+        echo -e "${GREEN}  SH1107 detected at 0x3C${NC}"
+        sh1107_found=true
+    elif i2cdetect -y "$i2c_num" 0x3d 0x3d 2>/dev/null | grep -q "3d"; then
+        echo -e "${GREEN}  SH1107 detected at 0x3D${NC}"
+        sh1107_found=true
+    fi
+    
+    if [ "$sh1107_found" = true ]; then
+        echo ""
+        echo "  M5Stack OLED Unit SH1107 (1.3\" 128x64 monochrome)"
+        echo "  ──────────────────────────────────────────────────"
+        echo "  Driver:      SH1107 (I2C, 128x64 pixels)"
+        echo "  Address:     0x3C (default) or 0x3D"
+        echo "  Interface:   GPIO hat Grove port (I2C mode)"
+        echo "  Grove port:  SW1=ON, SW2=ON (I2C mode)"
+        echo ""
+        echo "  ${CYAN}Grove wiring — NFC/CC1101 GPIO hat extra Grove port:${NC}"
+        echo "    M5Stack SH1107 OLED   GPIO Hat Grove Port"
+        echo "    ──────────────────    ────────────────────"
+        echo "    VCC (5V/3.3V)     →   VCC"
+        echo "    SDA               →   SDA — I2C data"
+        echo "    SCL               →   SCL — I2C clock"
+        echo "    GND               →   GND"
+        echo ""
+        echo "  ${CYAN}Activation:${NC}"
+        echo "    Add to /boot/config.txt:"
+        echo "      dtparam=i2c_arm=on"
+        echo "      dtoverlay=sh1107,i2c_bus=${i2c_num},address=0x3c"
+        echo "    Or use Python/luma.oled:"
+        echo "      pip3 install luma.oled"
+        echo "      oled-ctl start"
+    else
+        echo -e "${YELLOW}No SH1107 OLED detected on bus ${i2c_num}${NC}"
+        echo "  Check:"
+        echo "    1. M5Stack OLED Unit is connected to GPIO hat Grove port"
+        echo "    2. Grove port switches: SW1=ON, SW2=ON (I2C mode)"
+        echo "    3. I2C is enabled (raspi-config → Interface Options → I2C)"
+        echo ""
+        echo "  ${CYAN}Grove wiring — NFC/CC1101 GPIO hat extra Grove port:${NC}"
+        echo "    M5Stack SH1107 OLED   GPIO Hat Grove Port"
+        echo "    ──────────────────    ────────────────────"
+        echo "    VCC (5V/3.3V)     →   VCC"
+        echo "    SDA               →   SDA — I2C data"
+        echo "    SCL               →   SCL — I2C clock"
+        echo "    GND               →   GND"
+    fi
+    
+    echo ""
+    echo "  ${CYAN}OLED usage examples:${NC}"
+    echo "    oled-ctl status       Show OLED status"
+    echo "    oled-ctl text 'OK'    Display text on OLED"
+    echo "    oled-ctl trail        Show Trail breadcrumb direction"
+    echo "    oled-ctl overwatch    Show Overwatch threat level"
+    echo "    oled-ctl ip           Show IP address on OLED"
+    echo "    oled-ctl clear        Clear OLED display"
+}
+
+unit_lcd_off() {
+    echo -e "${YELLOW}M5Stack OLED Unit SH1107 disabled${NC}"
+    oled-ctl clear 2>/dev/null || true
+    echo "  Remove dtoverlay from /boot/config.txt and reboot to fully disable"
+}
+
+set_brightness() {
+    local level="${1:-100}"
+    if [ "$level" -lt 0 ] 2>/dev/null || [ "$level" -gt 100 ] 2>/dev/null; then
+        echo "Usage: ext-display brightness <0-100>"
+        return 1
+    fi
+    
+    for bl in /sys/class/backlight/*/brightness; do
+        if [ -e "$bl" ]; then
+            local max=$(cat "$(dirname "$bl")/max_brightness" 2>/dev/null || echo 100)
+            local val=$((level * max / 100))
+            echo "$val" > "$bl" 2>/dev/null && echo -e "${GREEN}Brightness set to ${level}%${NC}" && return 0
+        fi
+    done
+    
+    echo -e "${YELLOW}No backlight control found${NC}"
+}
+
+set_rotation() {
+    local degrees="${1:-0}"
+    case "$degrees" in
+        0|90|180|270) ;;
+        *) echo "Usage: ext-display rotate <0|90|180|270>"; return 1 ;;
+    esac
+    
+    if command -v xrandr >/dev/null 2>&1; then
+        local output=$(xrandr 2>/dev/null | grep " connected" | head -1 | awk '{print $1}')
+        xrandr --output "$output" --rotate "${degrees}" 2>/dev/null && \
+            echo -e "${GREEN}Display rotated to ${degrees}°${NC}" && return 0
+    fi
+    
+    echo -e "${YELLOW}Rotation requires X11/Wayland compositor${NC}"
+    echo "  For DRM/KMS, add to /boot/config.txt:"
+    echo "    display_rotate=${degrees}"
+}
+
+show_info() {
+    echo -e "${BOLD}══════════════════════════════════════════════════${NC}"
+    echo -e "${BOLD}  ZERO-DAY OS — Display Information${NC}"
+    echo -e "${BOLD}══════════════════════════════════════════════════${NC}"
+    echo ""
+    echo "  Internal Display:"
+    echo "    Type:       ST7789V LCD"
+    echo "    Resolution: 320x170 pixels"
+    echo "    Interface:   SPI (framebuffer)"
+    echo "    Size:        1.9 inches"
+    echo ""
+    echo "  Supported External Displays:"
+    echo ""
+    echo "  ${CYAN}1. HDMI Monitor/TV${NC}"
+    echo "    — Plug into micro-HDMI port"
+    echo "    — Mirror or extend internal display"
+    echo "    — Resolutions: 640x480 to 1920x1080"
+    echo "    — Best for: Presentations, extended workspace"
+    echo ""
+    echo "  ${CYAN}2. SPI TFT Display (14-Pin ExtPort)${NC}"
+    echo "    — ILI9341 2.8\" (240x320) via SPI"
+    echo "    — ST7789 1.54\" (240x240) via SPI"
+    echo "    — Pin wiring: VCC, GND, MOSI, MISO, SCK, CS, DC, RST, BL"
+    echo "    — Best for: Secondary status display, sensor dashboard"
+    echo ""
+    echo "  ${CYAN}3. M5Stack OLED Unit SH1107 (Grove I2C)${NC}"
+    echo "    — 1.3\" 128x64 monochrome OLED"
+    echo "    — I2C address 0x3C (default) or 0x3D"
+    echo "    — Pin wiring: VCC, SDA, SCL, GND (Grove port)"
+    echo "    — Best for: Status panel, Trail nav hints, Overwatch alerts"
+    echo ""
+    echo "  ${CYAN}4. USB Display Adapter (DisplayLink)${NC}"
+    echo "    — Any DisplayLink-compatible USB display"
+    echo "    — Requires: displaylink-driver package"
+    echo "    — Best for: Portable external monitor"
+    echo ""
+    echo "  M5Stack GPS Module v1.1 (Grove UART):"
+    echo "    — Shares Grove port with SH1107 OLED (I2C mode)"
+    echo "    — Cannot use GPS + OLED simultaneously (different modes)"
+    echo "    — Can use GPS + HDMI or GPS + SPI TFT simultaneously"
+    echo ""
+    detect_displays
+}
+
+case "${1:-help}" in
+    status)         detect_displays ;;
+    info)           show_info ;;
+    hdmi)
+        case "${2:-}" in
+            on)          hdmi_on ;;
+            off)         hdmi_off ;;
+            mirror)      hdmi_mirror ;;
+            extend)      hdmi_extend "right" ;;
+            extend-left) hdmi_extend "left" ;;
+            resolution)  hdmi_resolution "${3:-720p}" ;;
+            *)           echo "Usage: ext-display hdmi {on|off|mirror|extend|extend-left|resolution <mode>}"; exit 1 ;;
+        esac
+        ;;
+    tft)
+        case "${2:-}" in
+            on)   tft_on ;;
+            off)  tft_off ;;
+            *)    echo "Usage: ext-display tft {on|off}"; exit 1 ;;
+        esac
+        ;;
+    unit-lcd)
+        case "${2:-}" in
+            on)   unit_lcd_on ;;
+            off)  unit_lcd_off ;;
+            *)    echo "Usage: ext-display unit-lcd {on|off}"; exit 1 ;;
+        esac
+        ;;
+    rotate)    set_rotation "${2:-0}" ;;
+    brightness) set_brightness "${2:-100}" ;;
+    help|-h|--help)
+        echo "ext-display — External display manager for ZERO-DAY OS"
+        echo ""
+        echo "Usage: ext-display <command> [args]"
+        echo ""
+        echo "Display types:"
+        echo "  hdmi {on|off|mirror|extend|extend-left|resolution <mode>}"
+        echo "  tft {on|off}                     SPI TFT on 14-Pin ExtPort"
+        echo "  unit-lcd {on|off}               M5Stack OLED SH1107 via Grove I2C"
+        echo ""
+        echo "Commands:"
+        echo "  status              Show connected displays"
+        echo "  info                Detailed display information"
+        echo "  rotate <degrees>    Rotate (0, 90, 180, 270)"
+        echo "  brightness <0-100>  Set backlight brightness"
+        echo ""
+        echo "HDMI examples:"
+        echo "  ext-display hdmi on              Enable HDMI"
+        echo "  ext-display hdmi mirror          Mirror internal LCD"
+        echo "  ext-display hdmi extend          Extend desktop (right)"
+        echo "  ext-display hdmi resolution 720p Set resolution"
+        echo ""
+        echo "Grove port sharing:"
+        echo "  I2C mode: Unit LCD or PN532 NFC (not both)"
+        echo "  UART mode: GPS Module or Meshtastic LoRa (not both)"
+        echo "  SPI TFT uses 14-Pin ExtPort (independent of Grove)"
+        ;;
+    *)
+        echo "Unknown command: $1"
+        echo "Run: ext-display help"
+        exit 1
+        ;;
+esac

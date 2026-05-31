@@ -1,0 +1,217 @@
+#!/bin/bash
+# trail-ctl — Control interface for zeroday-trail daemon
+# Usage: trail-ctl <command> [args]
+#
+# Commands:
+#   start           Start dropping breadcrumbs (start daemon if not running)
+#   mark <tag>      Tag current waypoint (e.g., "exit", "stairs", "server_room")
+#   exit            Activate exit guidance mode
+#   pause           Pause breadcrumb dropping (save battery)
+#   resume          Resume breadcrumb dropping
+#   stop            Stop the trail daemon
+#   status          Show current status
+#   stats           Show breadcrumb statistics
+#   history         Show last 20 breadcrumbs
+#   dump            Export breadcrumbs as GPX
+#   clear           Wipe today's breadcrumbs
+#   clear-all       Wipe all breadcrumbs
+#   baseline        Snapshot current environment as baseline
+#   ignore <MAC>    Whitelist a BT device or AP
+
+TRAIL_BIN="/usr/local/bin/zeroday-trail"
+TRAIL_PID="/tmp/trail.pid"
+TRAIL_MODE="/tmp/trail-mode"
+TRAIL_STATUS="/tmp/trail-status"
+TRAIL_DATA="/opt/cardputer/trail/breadcrumbs"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+is_running() {
+    if [ -f "$TRAIL_PID" ]; then
+        local pid=$(cat "$TRAIL_PID" 2>/dev/null)
+        [ -n "$pid" ] && [ -d "/proc/$pid" ] && return 0
+    fi
+    return 1
+}
+
+cmd_start() {
+    if is_running; then
+        echo -e "${YELLOW}Trail daemon already running (PID $(cat "$TRAIL_PID"))${NC}"
+        echo "drop" > "$TRAIL_MODE"
+        echo -e "${GREEN}Resumed breadcrumb dropping${NC}"
+        return 0
+    fi
+    echo -e "${BOLD}Starting trail daemon...${NC}"
+    nohup "$TRAIL_BIN" >/dev/null 2>&1 &
+    sleep 1
+    if is_running; then
+        echo -e "${GREEN}Trail daemon started (PID $(cat "$TRAIL_PID"))${NC}"
+        echo -e "  Dropping breadcrumbs every 15 seconds on ${CYAN}wlan0${NC}"
+        echo -e "  Use ${BOLD}trail-ctl mark \"exit\"${NC} to tag important waypoints"
+    else
+        echo -e "${RED}Failed to start trail daemon${NC}"
+        echo "  Run manually: $TRAIL_BIN"
+        return 1
+    fi
+}
+
+cmd_mark() {
+    local tag="${1:-waypoint}"
+    if ! is_running; then
+        echo -e "${RED}Trail daemon not running${NC}"
+        echo "  Start it first: trail-ctl start"
+        return 1
+    fi
+    "$TRAIL_BIN" mark "$tag"
+    echo -e "${GREEN}Waypoint tagged: ${BOLD}$tag${NC}"
+}
+
+cmd_exit() {
+    if ! is_running; then
+        echo -e "${RED}Trail daemon not running${NC}"
+        echo "  Start it first: trail-ctl start"
+        return 1
+    fi
+    echo "exit" > "$TRAIL_MODE"
+    echo -e "${BOLD}${YELLOW}EXIT GUIDANCE ACTIVATED${NC}"
+    echo -e "  Follow directional hints to find your way out"
+    echo -e "  Use ${BOLD}trail-ctl resume${NC} to stop exit mode"
+}
+
+cmd_pause() {
+    echo "pause" > "$TRAIL_MODE"
+    echo -e "${YELLOW}Trail paused — breadcrumbs stopped${NC}"
+}
+
+cmd_resume() {
+    echo "drop" > "$TRAIL_MODE"
+    echo -e "${GREEN}Trail resumed — dropping breadcrumbs${NC}"
+}
+
+cmd_stop() {
+    if [ -f "$TRAIL_PID" ]; then
+        local pid=$(cat "$TRAIL_PID" 2>/dev/null)
+        if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
+            kill "$pid" 2>/dev/null
+            rm -f "$TRAIL_PID" "$TRAIL_MODE" "$TRAIL_STATUS"
+            echo -e "${RED}Trail daemon stopped${NC}"
+        else
+            rm -f "$TRAIL_PID" "$TRAIL_MODE" "$TRAIL_STATUS"
+            echo "Stale PID removed"
+        fi
+    else
+        echo "Trail daemon not running"
+    fi
+}
+
+cmd_status() {
+    if is_running; then
+        local pid=$(cat "$TRAIL_PID")
+        local mode=$(cat "$TRAIL_MODE" 2>/dev/null || echo "unknown")
+        local status=$(cat "$TRAIL_STATUS" 2>/dev/null || echo "no status")
+        echo -e "${GREEN}● Running${NC} (PID $pid)"
+        echo "  Mode:   $mode"
+        echo "  Status: $status"
+    else
+        echo -e "${RED}● Stopped${NC}"
+    fi
+}
+
+cmd_stats() {
+    "$TRAIL_BIN" stats 2>/dev/null || echo -e "${RED}No breadcrumb data found${NC}"
+}
+
+cmd_history() {
+    local today=$(date +%Y-%m-%d 2>/dev/null || echo "today")
+    local latest=$(ls -t "$TRAIL_DATA"/*.jsonl 2>/dev/null | head -1)
+    if [ -z "$latest" ]; then
+        echo -e "${RED}No breadcrumbs found${NC}"
+        return
+    fi
+    echo -e "${BOLD}Last 20 breadcrumbs:${NC}"
+    tail -20 "$latest" | while read -r line; do
+        local ts=$(echo "$line" | grep -o '"timestamp":[0-9]*' | cut -d: -f2)
+        local tag=$(echo "$line" | grep -o '"tag":"[^"]*"' | cut -d\" -f4)
+        local aps=$(echo "$line" | grep -o '"fingerprints":\[' | wc -c || true)
+        local time_str=""
+        if [ -n "$ts" ]; then
+            time_str=$(date -d "@$ts" "+%H:%M:%S" 2>/dev/null || echo "$ts")
+        fi
+        local tag_str=""
+        [ -n "$tag" ] && tag_str=" [$tag]"
+        echo -e "  ${CYAN}${time_str}${NC}${tag_str}"
+    done
+}
+
+cmd_dump() {
+    "$TRAIL_BIN" dump 2>/dev/null
+}
+
+cmd_clear() {
+    "$TRAIL_BIN" clear 2>/dev/null
+    echo -e "${YELLOW}Today's breadcrumbs cleared${NC}"
+}
+
+cmd_clear_all() {
+    rm -f "$TRAIL_DATA"/*.jsonl
+    echo -e "${RED}All breadcrumbs wiped${NC}"
+}
+
+cmd_baseline() {
+    echo -e "${YELLOW}Baseline snapshot requires the daemon to be running${NC}"
+    echo "  Baseline is learned automatically from the first 5 minutes of breadcrumbs"
+}
+
+cmd_ignore() {
+    local mac="${1:-}"
+    if [ -z "$mac" ]; then
+        echo "Usage: trail-ctl ignore <MAC_ADDRESS>"
+        return 1
+    fi
+    mkdir -p /opt/cardputer/trail/config
+    echo "$mac" >> /opt/cardputer/trail/config/ignored_macs.txt
+    echo -e "${GREEN}Added $mac to ignore list${NC}"
+}
+
+case "${1:-}" in
+    start)      cmd_start ;;
+    mark)       cmd_mark "$2" ;;
+    exit)       cmd_exit ;;
+    pause)      cmd_pause ;;
+    resume)     cmd_resume ;;
+    stop)       cmd_stop ;;
+    status)     cmd_status ;;
+    stats)      cmd_stats ;;
+    history)    cmd_history ;;
+    dump)       cmd_dump ;;
+    clear)      cmd_clear ;;
+    clear-all)  cmd_clear_all ;;
+    baseline)   cmd_baseline ;;
+    ignore)     cmd_ignore "$2" ;;
+    *)
+        echo "Trail — Breadcrumb Navigation for ZERO-DAY OS"
+        echo ""
+        echo "Usage: trail-ctl <command> [args]"
+        echo ""
+        echo "Commands:"
+        echo "  start           Start dropping breadcrumbs"
+        echo "  mark <tag>      Tag current waypoint (exit, stairs, server_room)"
+        echo "  exit            Activate exit guidance"
+        echo "  pause           Pause dropping (save battery)"
+        echo "  resume          Resume dropping"
+        echo "  stop            Stop the daemon"
+        echo "  status          Show daemon status"
+        echo "  stats           Show breadcrumb statistics"
+        echo "  history         Show last 20 breadcrumbs"
+        echo "  dump            Export breadcrumbs as GPX"
+        echo "  clear           Wipe today's breadcrumbs"
+        echo "  clear-all       Wipe all breadcrumbs"
+        echo "  baseline        Snapshot current environment"
+        echo "  ignore <MAC>    Add MAC to ignore list"
+        ;;
+esac

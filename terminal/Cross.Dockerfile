@@ -1,4 +1,4 @@
-FROM ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main
+FROM ghcr.io/cross-rs/aarch64-unknown-linux-gnu:latest
 
 RUN dpkg --add-architecture arm64 && \
     apt-get update && \

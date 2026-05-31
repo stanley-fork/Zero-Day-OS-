@@ -1,5 +1,28 @@
 #!/bin/bash -e
 set -euo pipefail
+# stage4/13-media-tools/01-run.sh
+# Install PulseAudio (with conffile fix) and media playback scripts
+# PulseAudio removed from 00-packages due to dpkg conffile prompt
+
+# Install PulseAudio with --force-confnew to avoid conffile prompt
+# (dpkg prompts on /etc/pulse/daemon.conf if a previous stage modified it)
+on_chroot << EOF
+DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::="--force-confnew" install \
+    pulseaudio pulseaudio-utils pulseaudio-module-bluetooth
+EOF
+
+# Write optimized PulseAudio config for embedded device
+mkdir -p "${ROOTFS_DIR}/etc/pulse"
+cat > "${ROOTFS_DIR}/etc/pulse/daemon.conf" << 'PACONF'
+# PulseAudio daemon configuration for Cardputer Zero
+# Optimized for low-latency audio on embedded device
+default-sample-rate = 48000
+default-sample-format = s16le
+default-fragments = 2
+default-fragment-size-msec = 5
+resample-method = trivial
+PACONF
+
 # Install media playback scripts
 
 install -m 755 -d "${ROOTFS_DIR}/usr/local/bin"
@@ -73,3 +96,5 @@ chmod +x "${ROOTFS_DIR}/usr/local/bin/music-player"
 
 # Create default music directory
 mkdir -p "${ROOTFS_DIR}/opt/cardputer/music"
+
+echo "[zeroday] Media tools installed (PulseAudio + ffmpeg + scripts)."

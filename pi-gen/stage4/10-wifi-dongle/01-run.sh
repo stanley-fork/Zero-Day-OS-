@@ -1,8 +1,7 @@
 #!/bin/bash -e
 set -euo pipefail
 # stage4/10-wifi-dongle/01-run.sh — Install RTL8821CU dongle driver and udev rules
-# Note: linux-headers-rpi is a Raspbian package, not available in Debian.
-# We install generic kernel headers and defer DKMS build to first boot.
+# Note: raspberrypi-kernel-headers is from the RPi apt repo (added in stage3)
 
 BIN="${ROOTFS_DIR}/usr/local/bin"
 
@@ -32,10 +31,10 @@ MODULES
 fi
 
 # Install build dependencies for DKMS driver build on first boot
-# Use Debian kernel headers instead of RPi-specific ones
+# raspberrypi-kernel-headers is available from the RPi apt repo (added in stage3)
 on_chroot << EOF
 apt-get install -y --no-install-recommends \
-    linux-headers-generic \
+    raspberrypi-kernel-headers \
     dkms \
     bc \
     git \

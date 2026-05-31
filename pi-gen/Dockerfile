@@ -44,6 +44,8 @@ COPY tui/ /project/tui/
 COPY configs/ /project/configs/
 COPY compositor/ /project/compositor/
 COPY terminal/ /project/terminal/
+COPY explorer/ /project/explorer/
+COPY trail/ /project/trail/
 COPY pi-gen/ /pi-gen/
 
 RUN chmod +x /pi-gen/build.sh /pi-gen/build-docker.sh /pi-gen/postrun.sh && \

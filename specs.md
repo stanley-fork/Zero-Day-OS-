@@ -24,7 +24,7 @@
 *   **AppBuilder:** czdev CLI + CI pipeline for building .deb packages
 *   **App Store:** CardputerZeroRepository — official apt repo for .deb distribution
 *   **DT Overlays:** m5stack-linux-dtoverlays — official device tree overlays for CardputerZero
-*   **Firmware:** dianjixz/cm0-firmware — pre-built kernel, modules, bootloader
+*   **Firmware:** raspberrypi-kernel (official RPi apt repo, CVE-patched)
 *   **Default user:** pi:pi (official), root:zeroday (zero-day OS)
 
 ## Key Features & Form Factor

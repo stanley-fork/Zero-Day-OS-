@@ -27,6 +27,10 @@ yt-dlp
 # Minimal video player (better on Wayland than ffplay)
 mpv
 
+# Jellyfin TV client
+# Full Jellyfin desktop (Qt5 + WebEngine) built in stage 16-jellyfin-desktop from source
+# jellyfin-mpv-shim is a pip package — installed in 01-run.sh
+
 # Wayland alternative WM (optional, heavier than cage)
 sway
 

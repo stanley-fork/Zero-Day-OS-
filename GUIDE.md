@@ -2,7 +2,7 @@
 
 **Complete guide to building, flashing, and operating ZERO-DAY OS on the M5Stack Cardputer Zero.**
 
-*Last updated: 2026-05-30*
+*Last updated: 2026-05-31*
 
 ---
 
@@ -25,7 +25,7 @@
 15. [Reverse Shells & Payloads](#15-reverse-shells--payloads)
 16. [Sub-GHz Radio (CC1101)](#16-sub-ghz-radio-cc1101)
 17. [NFC / RFID (PN532)](#17-nfc--rfid-pn532)
-18. [M5MonsterC5 — ESP32C5 WiFi Attack Board](#18-m5monsterc5--esp32c5-wifi-attack-board)
+18. [M5MonsterC5 — ESP32C5 Middle Manager Hub](#18-m5monsterc5--esp32c5-middle-manager-hub)
 19. [JanOS Interactive Controller](#19-janos-interactive-controller)
 20. [Ragnar Reconnaissance](#20-ragnar-reconnaissance)
 21. [SDR & Hardware Tools](#21-sdr--hardware-tools)
@@ -89,7 +89,7 @@ cd cardzero
 # Install cross-rs (Docker-based cross-compilation)
 cargo install cross
 
-# Build the compositor (currently a stub launcher — DRM backend is WIP)
+# Build the compositor (dual-output Wayland compositor with HDMI hotplug)
 cd compositor
 make deps          # Build custom cross-rs Docker image with Wayland/DRM libs
 make cross-build   # Cross-compile for aarch64
@@ -125,15 +125,25 @@ The build runs entirely inside a Docker container (`zeroday_pigen`). It copies t
 [18:48:20] [zeroday-term] Found pre-built binary — installing
 [18:48:20] End /pi-gen/stage3/08-terminal-term
 ...
-[18:55:33] End /pi-gen/stage5
-[18:55:33] Build finished
+[18:48:16] Begin /pi-gen/stage4/16-jellyfin-desktop
+[18:48:16] [zeroday] Upgrading meson via pip...
+[18:49:00] [zeroday] meson upgraded.
+[18:49:00] [zeroday] Upgrading wayland-protocols...
+[18:50:00] [zeroday] wayland-protocols upgraded.
+[18:50:00] [zeroday] Building libmpv...
+[19:10:00] [zeroday] libmpv built and installed.
+[19:10:00] [zeroday] Building jellyfin-media-player v1.12.0...
+[19:25:00] [zeroday] jellyfin-media-player v1.12.0 build complete.
+[19:25:00] End /pi-gen/stage4/16-jellyfin-desktop
+[19:35:33] End /pi-gen/stage5
+[19:35:33] Build finished
 ```
 
 ### Build output
 
 The compressed image lands at:
 ```
-pi-gen/deploy/2026-05-30-zeroday-os--full.zip   (~960MB)
+pi-gen/deploy/2026-05-31-zeroday-os--full.zip   (~1.2GB)
 ```
 
 Inside is a raw SD card image with:
@@ -298,6 +308,11 @@ The Cardputer Zero has a 46-key matrix keyboard. The `Fn` key (bottom-left) acts
 | `Fn + C` | Camera snap |
 | `Fn + I` | IR scan |
 | `Fn + D` | Dongle status |
+| `Fn + M` | Jellyfin TV menu |
+| `Fn + G` | Launch DOOM |
+| `Fn + R` | Launch retro games |
+| `Fn + Y` | YouTube search |
+| `Fn + U` | WebUI dashboard |
 | `Fn + A` | OpenCode ask (AI prompt) |
 
 ### Terminal shortcuts (zeroday-term / tmux)
@@ -346,16 +361,335 @@ If zeroday-term is unavailable, the system falls back to `stterm` (X11) or `foot
 
 ### HDMI output
 
-To enable fullscreen video/gaming on an external monitor:
+The Cardputer Zero supports **dual-output** via HDMI — the LCD and HDMI display simultaneously mirror the same content. When an HDMI monitor is connected, `zeroday-comp` automatically detects it and outputs at 1920x1080@30fps.
+
+**Automatic hotplug (default):** The `99-hdmi-hotplug.rules` udev rule and `hdmi-hotplug-notify` script monitor HDMI cable events. When HDMI is plugged in:
+- `zeroday-comp` receives SIGUSR1 and adds HDMI-A-1 output
+- PulseAudio switches audio output to HDMI
+- `ZERODAY_HDMI=1` and `ZERODAY_DISPLAY=hdmi` are set for child processes
+
+When HDMI is unplugged, the HDMI output is removed and audio switches back to speakers.
+
+**Manual override:**
 ```bash
-export ZERODAY_DISPLAY=hdmi
+export ZERODAY_DISPLAY=hdmi    # Force HDMI output
+export ZERODAY_DISPLAY=lcd     # Force LCD-only output
 ```
 
-This is checked by `yt`, `doom-play`, `retro-play`, and `mpv` to select output resolution.
+This is checked by `yt`, `doom-play`, `retro-play`, `jellyfin-tv`, and `mpv` to select output resolution.
+
+**USB-A keyboard:** Plugging a USB keyboard into the USB-A port is auto-detected by `70-usb-input.rules` + `usb-input-notify` which sends SIGUSR2 to the compositor for input device rescan.
 
 ---
 
-## 8. The Flipper TUI
+## 7b. Jellyfin TV — Media Box Mode
+
+Press **Fn+M** from anywhere to launch the Jellyfin TV menu. When an HDMI monitor is connected, it becomes a full TV media box streaming from your Jellyfin server at 1080P.
+
+### Quick Start
+
+```bash
+jellyfin-tv                   # Interactive menu (auto-detects HDMI)
+jellyfin-tv connect <url>     # Connect to Jellyfin server
+jellyfin-tv cast              # Start cast receiver (mpv-shim)
+jellyfin-tv play <url>        # Play URL directly (YouTube, etc.)
+jellyfin-tv local              # Play local media files
+jellyfin-tv off                # Stop all playback
+```
+
+### Jellyfin Desktop (Qt5 GUI Client)
+
+If `jellyfin-media-player` is installed (built from source in pi-gen stage 16):
+- Press **D** from the jellyfin-tv menu to launch the full Qt5 desktop client
+- Or run: `jellyfinmediaplayer`
+- Shows Jellyfin web UI with embedded mpv player
+- Best experience on HDMI (1080P), functional on LCD (320x170)
+- Config: `/etc/xdg/jellyfinmediaplayer/`
+
+### Cast Receiver (mpv-shim)
+
+```bash
+jellyfin-tv cast               # Start mpv-shim cast receiver
+# Then cast from any Jellyfin app on your phone/tablet
+```
+
+### HDMI Auto-Detect
+
+When HDMI is plugged in, `jellyfin-tv` automatically uses fullscreen 1080P with hardware video decoding. On LCD-only mode, it plays audio-only (saving battery). The `ZERODAY_DISPLAY` and `ZERODAY_HDMI` environment variables control this automatically.
+
+---
+
+## 8. File Explorer (zeroday-fm)
+
+**zeroday-fm** is a TUI file explorer built in Rust, optimized for the 320x170 screen and 46-key keyboard. Navigate directories, view files, inspect binaries, manage archives — all without a mouse.
+
+### Launch
+
+```bash
+zeroday-fm                    # Start in current directory
+zeroday-fm /opt/cardputer     # Start in specific directory
+fm                             # Short alias
+```
+
+### Navigation
+
+| Key | Action |
+|---|---|
+| `↑/↓` or `Ctrl+J/Ctrl+K` | Move up/down |
+| `Enter` or `→` | Open directory / view file |
+| `←` or `Backspace` | Go to parent directory |
+| `Ctrl+O` | Go back in history |
+| `Ctrl+I` | Go forward in history |
+| `Home` | Jump to first file |
+| `End` | Jump to last file |
+| `PgUp/PgDn` | Scroll page up/down |
+| `.` | Toggle hidden files |
+| `Ctrl+S` | Cycle sort order (Type→Name→Size→Date) |
+
+### File Operations
+
+| Key | Action |
+|---|---|
+| `Ctrl+Y` | Copy file (yank) |
+| `Ctrl+X` | Cut file |
+| `Ctrl+V` | Paste (copy or move, depending on yank/cut) |
+| `Ctrl+D` | Delete file/directory (with confirmation) |
+| `Ctrl+R` | Rename file |
+| `Ctrl+N` | Create new directory |
+| `Space` | Mark/unmark file |
+| `Ctrl+A` | Mark all files |
+| `Ctrl+U` | Unmark all files |
+
+### Viewing & Inspection
+
+| Key | Action |
+|---|---|
+| `Alt+H` | Open hex viewer for current file |
+| `Alt+M` | Show file metadata (permissions, size, owner, timestamps) |
+| `Alt+B` | Open bookmarks list |
+
+**Hex viewer navigation:** `j/k` or `↑/↓` scroll lines, `PgUp/PgDn` scroll pages, `Home/End` jump to start/end, `Esc` or `q` to exit.
+
+### Search
+
+| Key | Action |
+|---|---|
+| `/` or `Ctrl+F` | Search by filename (supports regex) |
+| `Enter` | Open search results |
+| `Esc` | Cancel search |
+
+### Archives
+
+| Key | Action |
+|---|---|
+| `Ctrl+Z` | Create ZIP archive from marked files (or current file) |
+| `Ctrl+E` | Extract ZIP archive |
+
+### Bookmarks
+
+Default bookmarks are set up for key directories:
+
+| Bookmark | Path |
+|---|---|
+| Home | `/root` |
+| Root | `/` |
+| Loot | `/opt/cardputer/loot` |
+| Config | `/opt/cardputer/config` |
+| Capture | `/opt/cardputer/capture` |
+| TMP | `/tmp` |
+
+Press `Alt+B` to open the bookmark list, `Enter` to navigate, `Esc` to close.
+
+### Configuration
+
+Config file: `/etc/zeroday/fm.env`
+```
+ZERODAY_FM_SHOW_HIDDEN=0    # Show hidden files on startup (0=no, 1=yes)
+ZERODAY_FM_SORT=type         # Default sort (type/name/size/date)
+ZERODAY_FM_START_DIR=/root   # Starting directory
+```
+
+---
+
+## 9. Trail — Breadcrumb Navigation
+
+**zeroday-trail** is a WiFi fingerprinting navigation daemon that drops breadcrumbs as you walk and guides you back to your exit using signal similarity matching. No GPS required — works purely from WiFi AP fingerprints.
+
+### How It Works
+
+1. **Drop mode**: Every 15 seconds, scans all visible WiFi APs and stores a fingerprint snapshot (BSSID, SSID, signal strength)
+2. **Mark waypoints**: Tag critical locations (`trail-ctl mark "exit"`) — these get priority in exit guidance
+3. **Exit mode**: Compares current WiFi fingerprint against stored breadcrumbs to find the path back out
+4. **Decay**: Breadcrumbs older than 8 hours gradually lose similarity weight
+
+### Commands
+
+| Command | Action |
+|---|---|
+| `trail-ctl start` | Start dropping breadcrumbs |
+| `trail-ctl mark "stairs"` | Tag current location |
+| `trail-ctl mark "exit"` | Tag known exit point |
+| `trail-ctl exit` | Activate exit guidance |
+| `trail-ctl pause` | Stop dropping (save battery) |
+| `trail-ctl resume` | Resume dropping |
+| `trail-ctl stats` | Show breadcrumb count and duration |
+| `trail-ctl dump` | Export breadcrumbs as GPX |
+| `trail-ctl merge <file>` | Merge breadcrumbs from another device |
+| `trail-ctl clear` | Wipe today's breadcrumbs |
+| `trail-ctl status` | Show daemon status and mode |
+| `trail-ctl ignore <MAC>` | Whitelist a MAC address |
+| `trail-ctl stop` | Stop the daemon |
+
+### OLED Integration
+
+```
+oled-ctl trail        # Show trail direction on SH1107 OLED
+oled-ctl overwatch    # Show threat level on OLED
+```
+
+### Configuration
+
+Config file: `/etc/zeroday/trail/config.env`
+
+```
+TRAIL_IFACE=wlan0              # WiFi interface for scanning
+TRAIL_INTERVAL=15              # Seconds between breadcrumb drops
+TRAIL_THRESHOLD=30             # Minimum similarity % for exit guidance
+TRAIL_MAX_BREADCRUMBS=2048     # Max breadcrumbs before pruning
+TRAIL_DECAY_HOURS=8            # Hours before breadcrumbs decay
+TRAIL_DATA_DIR=/opt/cardputer/trail/breadcrumbs
+TRAIL_OVERWATCH=true           # Enable threat detection
+TRAIL_EVIL_TWIN=true           # Detect evil twin APs
+TRAIL_NEW_AP_WATCH=true        # Watch for new APs
+TRAIL_QUIET=false              # Suppress non-essential output
+```
+
+---
+
+## 10. GPS — M5Stack GPS Module v1.1
+
+The M5Stack GPS Module v1.1 uses the AT6558 GNSS chip (GPS/BDS/GLONASS/GALILEO/QZSS) with AT3335 patch antenna. It connects to M5MonsterC5's Grove port (daisy-chained from Cardputer Zero).
+
+### Wiring
+
+```
+M5Stack GPS v1.1    M5MonsterC5 Grove
+────────────────    ────────────────────
+VCC              →   VCC
+TX               →   RX — UART receive
+RX               →   TX — UART transmit
+GND              →   GND
+```
+
+> **Note:** GPS is on M5MonsterC5's Grove port (not Cardputer Zero's). The Grove chain is: Cardputer Zero → M5MonsterC5 (IN) → GPS + C6L (OUT).
+
+### Commands
+
+| Command | Action |
+|---|---|
+| `gps-ctl start` | Start GPS daemon (gpsd) |
+| `gps-ctl stop` | Stop GPS daemon |
+| `gps-ctl status` | Show GPS fix info and satellites |
+| `gps-ctl location` | Print current lat/lon/alt |
+| `gps-ctl waypoints` | List saved waypoints |
+| `gps-ctl save "entrance"` | Save current location as waypoint |
+| `gps-ctl goto "entrance"` | Show direction and distance to waypoint |
+| `gps-ctl track` | Start recording GPS track |
+| `gps-ctl wardrive` | GPS + WiFi scan wardriving |
+| `gps-ctl probe` | Detect GPS module on UART |
+| `gps-ctl nmea` | Raw NMEA output (debug) |
+| `gps-ctl config` | Show GPS configuration |
+
+### Trail + GPS Integration
+
+When both GPS and Trail are running, breadcrumbs include GPS coordinates for precise waypoint matching:
+
+```
+trail-ctl start          # Start dropping breadcrumbs (WiFi + GPS)
+trail-ctl mark "exit"    # Tag with GPS coordinates
+trail-ctl dump           # Export as GPX with WiFi + GPS data
+```
+
+---
+
+## 11. External Display
+
+The Cardputer Zero's 1.9" internal LCD (320x170) can be supplemented with external displays for extended work, presentations, or status panels.
+
+### HDMI
+
+```bash
+ext-display hdmi on              # Enable HDMI output
+ext-display hdmi mirror          # Mirror internal LCD
+ext-display hdmi extend          # Extend desktop (right)
+ext-display hdmi extend-left     # Extend desktop (left)
+ext-display hdmi resolution 720p # Set resolution
+ext-display hdmi off              # Disable HDMI
+```
+
+### SPI TFT (14-Pin ExtPort)
+
+ILI9341 2.8" (240x320) or ST7789 1.54" (240x240) connected via SPI:
+
+```
+TFT Pin         Cardputer Zero ExtPort
+─────────       ──────────────────────
+VCC             Pin 1 (3.3V) or Pin 14 (5V)
+GND             Pin 2 (GND)
+MOSI            Pin 4 (SPI0 MOSI)
+MISO            Pin 5 (SPI0 MISO)
+SCK             Pin 6 (SPI0 SCLK)
+CS              Pin 7 (SPI0 CE0)
+DC              Pin 9 (GPIO)
+RST             Pin 10 (GPIO)
+BL              Pin 11 (GPIO, backlight)
+```
+
+```bash
+ext-display tft on    # Enable SPI TFT overlay
+ext-display tft off   # Disable (requires reboot)
+```
+
+### M5Stack OLED Unit SH1107 (GPIO Hat Grove I2C)
+
+1.3" 128x64 monochrome OLED connected via NFC/CC1101 GPIO hat's extra Grove port:
+
+```
+M5Stack SH1107 OLED   NFC/CC1101 GPIO Hat Grove
+──────────────────   ──────────────────────────
+VCC (5V/3.3V)      →   VCC
+SDA                 →   SDA — I2C data
+SCL                 →   SCL — I2C clock
+GND                 →   GND
+```
+
+I2C address: **0x3C** (default) or **0x3D**
+
+```bash
+oled-ctl install          # Install luma.oled dependencies
+oled-ctl test             # Display test pattern
+oled-ctl status           # Show OLED detection status
+oled-ctl text "OK"        # Display text
+oled-ctl text-rows "Line1" "Line2" "Line3" "Line4"
+oled-ctl trail            # Show Trail navigation status
+oled-ctl overwatch        # Show Overwatch threat level
+oled-ctl ip               # Show WiFi IP
+oled-ctl battery          # Show battery status
+oled-ctl sysinfo          # Show CPU/mem/disk
+oled-ctl clock            # Show clock
+oled-ctl qr "text"        # Generate QR code
+oled-ctl clear            # Clear display
+oled-ctl off               # Turn off display
+oled-ctl daemon           # Rotating status display
+ext-display unit-lcd on    # Detect and configure SH1107
+ext-display unit-lcd off   # Disable SH1107
+```
+
+> **Note:** The SH1107 OLED and PN532 NFC share the Grove I2C port — they cannot be used simultaneously. GPS uses UART mode on the same port, so GPS + OLED cannot coexist either. HDMI and SPI TFT are on separate interfaces and work independently.
+
+---
+
+## 12. The Flipper TUI
 
 The `cyber_launcher` is a Pygame (SDL2) GUI application that provides a Flipper Zero-style interface on the 1.9" LCD. It has three levels of navigation:
 
@@ -389,7 +723,7 @@ The `cyber_launcher` is a Pygame (SDL2) GUI application that provides a Flipper 
 
 ---
 
-## 9. WiFi Operations
+## 13. WiFi Operations
 
 ### Quick survey
 ```bash
@@ -460,7 +794,7 @@ Credentials are logged to `/opt/cardputer/loot/captive/captive_creds_*.log`.
 
 ---
 
-## 10. Dual-WiFi with RTL8821CU Dongle
+## 14. Dual-WiFi with RTL8821CU Dongle
 
 The RTL8821CU USB dongle on the USB-A port gives you a second WiFi radio (`wlan1`). This enables simultaneous attack and C2:
 
@@ -495,7 +829,7 @@ Any adapter with the **RTL8821CU** chipset:
 
 ---
 
-## 11. Network Reconnaissance
+## 15. Network Reconnaissance
 
 ### Discover all hosts on the network
 ```bash
@@ -595,7 +929,7 @@ sudo responder -I eth0
 
 ---
 
-## 12. Bluetooth Operations
+## 16. Bluetooth Operations
 
 ### Scan for devices
 ```bash
@@ -632,9 +966,37 @@ sudo ble-gatt AA:BB:CC:DD:EE:FF
 # Enumerates: services, characteristics, descriptors, handles
 ```
 
+### BLE Remote — Android/iOS Companion
+
+The Cardputer Zero runs a Flipper Zero-style BLE GATT server for remote control from a companion app on your phone. It advertises as "Cardputer-Zero" and exposes 6 GATT characteristics for shell access, file transfer, device dashboard, panic/stealth, C6L control, and mesh relay.
+
+```bash
+zeroday-ble-remote start          # Start BLE GATT server
+zeroday-ble-remote status         # Show server status + device info
+zeroday-ble-remote stop           # Stop BLE GATT server
+systemctl enable zeroday-ble-remote  # Auto-start on boot
+```
+
+**GATT Service UUID:** `0000fe5e-0000-1000-8000-00805f9b34fb`
+
+| Characteristic | UUID | Type | Purpose |
+|---|---|---|---|
+| Command RX | `fe5e0001` | Write | Send commands from app |
+| Command TX | `fe5e0002` | Notify | Receive responses |
+| File TX | `fe5e0003` | Notify | Stream file data to app |
+| File RX | `fe5e0004` | Write | Upload file data |
+| Status | `fe5e0005` | Read/Notify | Device dashboard JSON |
+| Screen | `fe5e0006` | Notify | Screen capture stream |
+
+**Commands (via Command RX):** `ping`, `status` (battery/WiFi/CPU/disk JSON), `panic`, `stealth` (backlight toggle), `wifi:on|off|scan`, `bt:on|off`, `shell:<cmd>`, `file:ls|get|put:<path>`, `c6l:<cmd>`, `mesh:<cmd>`, `screen`, `reboot`, `shutdown`.
+
+Status notifications broadcast every 10s — the app dashboard updates live.
+
+Full Android/iOS companion protocol: `scripts/hardware/ble-remote/ANDROID_API.md`
+
 ---
 
-## 13. Infrared Hacking
+## 17. Infrared Hacking
 
 ### Capture a signal
 ```bash
@@ -659,7 +1021,7 @@ sudo ir-replay /opt/cardputer/loot/ir/signal_20260425_*.raw
 
 ---
 
-## 14. Camera & OCR
+## 18. Camera & OCR
 
 ### Capture a still image
 ```bash
@@ -684,7 +1046,7 @@ cam-ocr                     # Capture + Tesseract OCR → stdout + text file
 
 ---
 
-## 15. Reverse Shells & Payloads
+## 19. Reverse Shells & Payloads
 
 ### Encrypted C2 listener
 ```bash
@@ -739,7 +1101,7 @@ searchsploit -x 12345              # Examine a specific exploit
 
 ---
 
-## 16. Sub-GHz Radio (CC1101)
+## 20. Sub-GHz Radio (CC1101)
 
 Requires a CC1101 module connected to the 2.54mm 14-pin expansion port (SPI).
 
@@ -768,7 +1130,7 @@ sudo subghz-replay /opt/cardputer/loot/rf/signal_*.raw
 
 ---
 
-## 17. NFC / RFID (PN532)
+## 21. NFC / RFID (PN532)
 
 Requires a PN532 module connected to the Grove HY2.0-4P port (I2C mode, switches 1+2 ON).
 
@@ -795,9 +1157,25 @@ sudo nfc-emulate AA:BB:CC:DD:EE:FF  # Emulate a specific UID
 
 ---
 
-## 18. M5MonsterC5 — ESP32C5 WiFi Attack Board
+## 22. M5MonsterC5 — ESP32C5 Middle Manager Hub
 
-The M5MonsterC5 is an ESP32C5-based add-on board running JanOS/projectZero firmware that connects to the Cardputer Zero via USB-A or UART serial. It provides dedicated WiFi attack hardware — offloading monitor-mode attacks from the Cardputer's own radios so `wlan0` stays online for C2 throughout the engagement.
+The M5MonsterC5 runs custom ZERO-DAY firmware (forked from C5Lab/M5MonsterC5-CardputerADV) and acts as the **middle-manager hub** connecting Cardputer Zero to GPS, C6L, and Meshtastic — while also serving as the dedicated WiFi attack radio.
+
+### Hub topology
+
+```
+Cardputer Zero (aarch64, main OS)
+  └── USB/UART ──→ M5MonsterC5 (ESP32C5, middle manager)
+                      ├── Grove IN  ← GPS Module v1.1 (AT6558 UART 9600)
+                      ├── Grove OUT → Unit C6L (ESP32-C6 Zigbee/BLE/LCD)
+                      └── LoRa radio → Meshtastic mesh node
+```
+
+The MonsterC5 firmware multiplexes all communication over a single serial connection:
+- No prefix = WiFi attack output (upstream protocol)
+- `GPS:` prefix = NMEA data from AT6558
+- `C6L:` prefix = data from/to Unit C6L (Zigbee/BLE)
+- `MESH:` prefix = Meshtastic messages
 
 ### Connecting the board
 
@@ -960,94 +1338,84 @@ monsterctl list_sd          # List files on board's SD card
 monsterctl list_html        # List captive portal HTML pages on board
 ```
 
-### Links
+### GPS passthrough (Grove IN)
 
-- [M5MonsterC5-CardputerADV](https://github.com/C5Lab/M5MonsterC5-CardputerADV)
-- [projectZero firmware](https://github.com/C5Lab/projectZero)
-
----
-
-## 19. JanOS Interactive Controller
-
-The JanOS-app is a Python TUI that provides an interactive, menu-driven front-end for the M5MonsterC5 board. Instead of memorizing `monsterctl` subcommands, you get a full-screen interactive interface for scanning, attacking, wardriving, and browsing captured data.
-
-**Two ways to interact with the M5MonsterC5:**
-- **`monsterctl`** — CLI/automation interface (one command per invocation, scriptable)
-- **`install-janos`** — Interactive TUI (menu-driven, visual, browse results in real time)
-
-### Installing JanOS-app
+The GPS Module v1.1 (AT6558) is connected to MonsterC5's Grove IN port. NMEA data is forwarded to Cardputer Zero:
 
 ```bash
-install-janos install
-# Clones JanOS-app from GitHub to /opt/cardputer/janos-app/
-# Installs pyserial dependency (lightweight, <5MB RAM)
+monsterctl gps m5             # Set GPS module type (default for M5Stack GPS v1.1)
+monsterctl gps_passthrough    # Stream raw GPS NMEA data to Cardputer Zero
+monsterctl gps raw            # Alias for gps_passthrough
+monsterctl hub_status         # Show Grove topology and passthrough status
 ```
 
-Check installation status:
+### C6L passthrough (Grove OUT)
+
+The Unit C6L (ESP32-C6) connects to MonsterC5's Grove OUT port. Commands are routed through MonsterC5:
 
 ```bash
-install-janos status
-# Shows: installed/not-installed, version, serial port
+monsterctl c6l_passthrough    # Stream C6L serial data
+monsterctl c6l_cmd ZIGBEE_SCAN  # Send command to C6L via MonsterC5
+monsterctl c6l_cmd BLE_SCAN    # Scan BLE via C6L
+monsterctl c6l_cmd 'LCD:1:hello'  # Display text on C6L LCD
 ```
 
-### Launching the interactive TUI
+Or use `c6l-ctl` which automatically routes through MonsterC5:
 
 ```bash
-install-janos run                      # Auto-detect serial port
-install-janos run /dev/ttyUSB0         # Specify serial port
-monsterctl janos                       # Alias — same as install-janos run
+c6l-ctl zigbee scan           # Automatically routes via monsterctl c6l_cmd
+c6l-ctl ble scan              # Same routing
+c6l-ctl lcd text "OK"         # LCD text also routed through MonsterC5
 ```
 
-The TUI communicates with the M5MonsterC5 board over UART at 115200 baud, using the same command set as `monsterctl`.
+### C6L direct BLE
 
-### Interactive menu options
-
-| Menu | Description |
-|---|---|
-| **Scan** | Scan for WiFi networks in range — shows ESSID, BSSID, channel, signal, encryption |
-| **Sniffer** | Capture WiFi packets on current channel — live packet feed |
-| **Attacks** | Menu of attack modes: Deauth, Blackout, SAE Overflow, Handshaker, Portal, Evil Twin, Beacon Spam, ARP, MITM |
-| **Wardrive + GPS** | Wardrive scan with GPS coordinates — logs all APs with location data |
-| **SD data browser** | Browse captured credentials, probe requests, and host data stored on the board's SD card |
-
-### Attack sub-menus
-
-Select a target AP from scan results, then choose an attack:
+The Cardputer Zero can also connect directly to C6L via Bluetooth — no MonsterC5, no cables needed. This uses the Cardputer Zero's built-in BT 4.2/BLE adapter to pair with C6L's BLE 5.0 radio:
 
 ```bash
-# From the TUI, the workflow is:
-# 1. Select "Scan" → see APs, pick target(s)
-# 2. Select "Attacks" → choose attack type
-# 3. Monitor progress in real time
-# 4. Select "SD data browser" → view captured credentials
+c6l-ctl ble connect            # Scan and pair to C6L via BLE
+c6l-ctl ble pair               # Scan and pair C6L via direct BLE (no MonsterC5)
+C6L_MODE=ble c6l-ctl <cmd>    # Route any command over BLE (bypasses MonsterC5)
+C6L_MODE=ble c6l-ctl zigbee scan  # Zigbee scan via direct BLE to C6L
+C6L_MODE=ble c6l-ctl lcd text "hello"  # LCD text via BLE
 ```
 
-### Updating JanOS-app
+The BLE path is useful when:
+- MonsterC5 is not connected (standalone operation)
+- You need wireless C6L control without USB cables
+- C6L is deployed remotely as a Zigbee/BLE sensor node
+
+### Meshtastic LoRa mesh
+
+The ESP32C5 runs Meshtastic natively alongside WiFi attacks:
 
 ```bash
-install-janos update
-# Pulls latest changes from GitHub repository
+monsterctl mesh status        # Check mesh node status
+monsterctl mesh start         # Start Meshtastic node
+monsterctl mesh send 1 "hello"  # Send message to channel 1
+monsterctl mesh config        # Show mesh configuration
+monsterctl mesh stop          # Stop mesh node
 ```
 
-### When to use each interface
+### Firmware
 
-| Task | Use `monsterctl` | Use `install-janos` (TUI) |
-|---|---|---|
-| Quick one-off command | ✓ | |
-| Scripted / automated attacks | ✓ | |
-| Interactive exploration | | ✓ |
-| Browsing scan results visually | | ✓ |
-| Monitoring attacks in real time | | ✓ |
-| Wardriving with live GPS feed | | ✓ |
-| Checking captured credentials | | ✓ |
+The MonsterC5 runs custom ZERO-DAY firmware forked from C5Lab/M5MonsterC5-CardputerADV:
+
+```bash
+monsterctl flash local        # Flash ZERO-DAY custom firmware
+monsterctl flash upstream     # Flash upstream JanOS firmware
+monsterctl flash cardputer    # Flash CardputerADV app (ESP32S3)
+```
 
 ### Links
 
-- [JanOS-app repository](https://github.com/D3h420/JanOS-app)
+- [M5MonsterC5-CardputerADV](https://github.com/C5Lab/M5MonsterC5-CardputerADV) — upstream hardware/firmware
+- [ZERO-DAY fork](https://github.com/jayis1/M5MonsterC5-zeroday) — custom firmware with GPS, C6L routing, Meshtastic
+- [Firmware spec](firmware/monsterc5/README.md) — build instructions and serial protocol
 
 ---
 
-## 20. Ragnar Reconnaissance
+## 24. Ragnar Reconnaissance
 
 [Ragnar](https://github.com/PierreGode/Ragnar) is a comprehensive Python-based network reconnaissance platform with AI-powered analysis, Nuclei scanning, ZAP integration, traffic analysis, and a web dashboard. It requires 2–8GB RAM — far too heavy for the Cardputer Zero's 512MB.
 
@@ -1146,7 +1514,7 @@ ragnar-scan eth0 full    # Lightweight recon, feed results to Ragnar
 
 ---
 
-## 21. SDR & Hardware Tools
+## 25. SDR & Hardware Tools
 
 Requires an RTL-SDR USB dongle connected to the USB-A port for SDR operations. GPIO probing works with built-in hardware.
 
@@ -1186,11 +1554,17 @@ sudo gpio-probe
 
 ---
 
-## 22. Meshtastic Mesh Networking
+## 26. Meshtastic Mesh Networking
 
-Requires a Meshtastic-compatible LoRa module connected to the Grove port (UART mode, switches 1+2 OFF).
+Meshtastic can connect three ways:
 
-> **Note:** PN532 NFC and Meshtastic LoRa share the Grove port — they cannot be used simultaneously.
+| Path | Connection | Cables | Use Case |
+|---|---|---|---|
+| **LoRa hat** | Cardputer Zero → UART → LoRa module | Grove cable | Primary, direct serial |
+| **MonsterC5** | Cardputer Zero → USB → MonsterC5 → LoRa | USB-C | Through hub, multiplexed |
+| **C6L via BLE** | Cardputer Zero → BT 4.2 → C6L BLE 5.0 | None (wireless) | Standalone, no cables |
+
+> **Note:** LoRa hat and PN532 NFC share the Grove port — they cannot be used simultaneously.
 
 ### Install and configure
 ```bash
@@ -1227,6 +1601,22 @@ mesh-chat nodes                     # List all discovered nodes
 mesh-chat info                       # Show local node status
 ```
 
+### Mesh via C6L Bluetooth
+
+Connect to a Meshtastic node running on C6L (ESP32-C6) over BLE — no serial cable or MonsterC5 needed:
+
+```bash
+mesh-chat ble                       # Scan for C6L Meshtastic node, pair via BLE
+mesh-chat ble --connect <MAC>       # Connect to a specific C6L by MAC address
+mesh-chat ble --chat 1              # Interactive chat over BLE to C6L
+mesh-chat ble --send "hello"        # Send message over BLE
+```
+
+The BLE path uses the Cardputer Zero's built-in Bluetooth 4.2 adapter to connect directly to C6L's BLE 5.0 radio. C6L then relays messages to the Meshtastic mesh over its LoRa radio. This is ideal for:
+- Standalone deployment (no MonsterC5 hub)
+- Wireless meshchat when USB is occupied
+- Remote C6L sensor nodes reporting over BLE
+
 ### Advanced mesh-setup commands
 ```bash
 mesh-setup send "Target found"       # Send encrypted message
@@ -1240,7 +1630,7 @@ mesh-setup exfil /path/to/file       # Exfiltrate file over mesh (chunked base64
 
 ---
 
-## 23. USB Gadget Mode
+## 27. USB Gadget Mode
 
 Plug the Cardputer Zero's USB-C port into a victim's computer. Flip the USB-C switch to "device" mode.
 
@@ -1279,7 +1669,7 @@ sudo usb-gadget-mode off
 
 ---
 
-## 24. Power Management
+## 28. Power Management
 
 ZERO-DAY OS has three power profiles tuned for the 1500mAh battery:
 
@@ -1318,7 +1708,7 @@ cardputer-wifi-toggle     # Toggle wlan0 on/off
 
 ---
 
-## 25. Panic System
+## 29. Panic System
 
 The panic system is designed for the moment you need to disappear — fast.
 
@@ -1357,7 +1747,7 @@ cat /opt/cardputer/panic.log
 
 ---
 
-## 26. OpenCode (Pocket IDE)
+## 30. OpenCode (Pocket IDE)
 
 OpenCode is an AI-assisted code editor you launch from the keyboard. It runs in a tmux split — editor on top, live console on the bottom.
 
@@ -1383,7 +1773,7 @@ Saves questions to `/opt/cardputer/workspace/` for later review. If the AI backe
 
 ---
 
-## 27. Troubleshooting
+## 31. Troubleshooting
 
 ### Compositor not starting
 
@@ -1397,7 +1787,7 @@ systemctl status zeroday-tui.service
 journalctl -u zeroday-comp.service --no-pager -n 50
 
 # Manually start the compositor chain:
-zeroday-comp --client /usr/local/bin/cyber_launcher --no-cursor
+zeroday-comp --client /usr/local/bin/cyber_launcher --no-cursor --hdmi-fps 30 --hdmi-auto
 # Or fall back to cage:
 cage -- /usr/local/bin/cyber_launcher
 
@@ -1416,6 +1806,77 @@ cat /etc/zeroday/term.env
 
 # Terminal status bar not showing:
 ZERODAY_TERM_STATUS_BAR=1 zeroday-term
+```
+
+### File explorer issues
+
+```bash
+# If zeroday-fm crashes, mc (midnight commander) is the fallback:
+mc
+
+# Check file explorer config:
+cat /etc/zeroday/fm.env
+
+# Start in a specific directory:
+zeroday-fm /path/to/dir
+
+# Force show hidden files:
+ZERODAY_FM_SHOW_HIDDEN=1 zeroday-fm
+```
+
+### Trail navigation issues
+
+```bash
+# If trail-ctl is not running, start it:
+trail-ctl start
+
+# Check current status:
+trail-ctl status
+
+# If WiFi scanning fails, verify interface:
+iw dev wlan0 scan dump
+
+# Clear corrupted breadcrumbs:
+trail-ctl clear
+
+# Check trail daemon logs:
+journalctl -u zeroday-trail --no-pager -n 50
+```
+
+### GPS issues
+
+```bash
+# Probe GPS module on UART:
+gps-ctl probe
+
+# If GPS_UART is wrong, try:
+GPS_UART=/dev/ttyAMA0 gps-ctl probe
+GPS_UART=/dev/ttyUSB0 gps-ctl probe
+
+# Check GPS config:
+gps-ctl config
+
+# View raw NMEA data:
+gps-ctl nmea
+```
+
+### OLED display issues
+
+```bash
+# Detect SH1107 on I2C:
+ext-display unit-lcd on
+
+# Check I2C bus:
+i2cdetect -y 1
+
+# Install luma.oled if missing:
+oled-ctl install
+
+# Test display:
+oled-ctl test
+
+# If address is 0x3D instead of 0x3C:
+OLED_I2C_ADDR=0x3D oled-ctl test
 ```
 
 ### System won't boot
@@ -1492,7 +1953,7 @@ iptables -L -n
 
 ---
 
-## 28. File System Layout
+## 32. File System Layout
 
 ### System directories
 | Path | Purpose |
@@ -1507,9 +1968,21 @@ iptables -L -n
 | `/usr/local/bin/` | All one-key hacking scripts |
 | `/usr/local/bin/zeroday-comp` | Rust Wayland compositor (~1.0MB) |
 | `/usr/local/bin/zeroday-term` | Rust terminal emulator (~1.2MB) |
+| `/usr/local/bin/zeroday-fm` | Rust file explorer (~1.9MB) |
+| `/usr/local/bin/fm` | Symlink → zeroday-fm (compatibility) |
+| `/usr/local/bin/zeroday-trail` | Rust breadcrumb nav daemon (~1.1MB) |
+| `/usr/local/bin/trail-ctl` | Trail control script |
+| `/usr/local/bin/gps-ctl` | GPS module controller |
+| `/usr/local/bin/ext-display` | External display manager |
+| `/usr/local/bin/oled-ctl` | SH1107 OLED controller |
 | `/usr/local/bin/st` | Symlink → zeroday-term (compatibility) |
 | `/etc/zeroday/comp.env` | Compositor environment config |
 | `/etc/zeroday/term.env` | Terminal emulator config |
+| `/etc/zeroday/fm.env` | File explorer config |
+| `/etc/zeroday/trail/config.env` | Trail daemon config |
+| `/opt/cardputer/trail/breadcrumbs/` | Trail WiFi fingerprint data |
+| `/opt/cardputer/trail/waypoints/` | GPS waypoints |
+| `/opt/cardputer/trail/gps-tracks/` | GPS track exports |
 | `/etc/i3/config` | i3 window manager keybindings |
 | `/etc/X11/xorg.conf` | X11 configuration for ST7789 LCD |
 | `/etc/zeroday-release` | Build info and version |
@@ -1527,7 +2000,7 @@ These are wiped on reboot — designed to reduce SD card writes:
 
 ---
 
-## 29. Expansion Hardware Wiring
+## 33. Expansion Hardware Wiring
 
 ### CC1101 Sub-GHz Transceiver (2.54mm 14-Pin ExtPort — SPI)
 
@@ -1546,33 +2019,135 @@ GDO2         →    Pin 10 (GPIO)
 
 > Pin assignments are PLACEHOLDER — will be finalized when hardware ships.
 
-### PN532 NFC Module (Grove HY2.0-4P — I2C Mode)
+### PN532 NFC / RFID2 Module (NFC/CC1101 GPIO Hat — I2C Mode)
+
+> Swap to LoRa hat for Meshtastic — only one hat at a time.
 
 ```
-PN532 Pin     →    Cardputer Zero Grove Pin
-──────────         ────────────────────────
-VCC           →    Pin 1 (VCC 3.3V/5V)
-SDA           →    Pin 2 (SDA — I2C data)
-SCL           →    Pin 3 (SCL — I2C clock)
-GND           →    Pin 4 (GND)
-
-Switch settings: SW1=ON, SW2=ON (I2C mode)
+PN532 Pin     →    NFC/CC1101 GPIO Hat Grove Port
+──────────         ──────────────────────────────
+VCC           →    VCC
+SDA           →    SDA — I2C data
+SCL           →    SCL — I2C clock
+GND           →    GND
 ```
 
-### Meshtastic LoRa Module (Grove HY2.0-4P — UART Mode)
+### Meshtastic LoRa Module (LoRa Hat UART — swapped with NFC hat)
+
+> Swap to NFC/CC1101 hat for PN532/RFID2 — only one hat at a time.
 
 ```
-LoRa Pin      →    Cardputer Zero Grove Pin
-─────────         ────────────────────────
-VCC           →    Pin 1 (VCC 3.3V/5V)
-TX            →    Pin 2 (RX — UART receive)
-RX            →    Pin 3 (TX — UART transmit)
-GND           →    Pin 4 (GND)
-
-Switch settings: SW1=OFF, SW2=OFF (UART mode)
+LoRa Pin      →    LoRa Hat Grove Port (UART)
+─────────         ──────────────────────────
+VCC           →    VCC
+TX            →    RX — UART receive
+RX            →    TX — UART transmit
+GND           →    GND
 ```
 
-> ⚠️ PN532 and Meshtastic share the Grove port and cannot be used simultaneously.
+> ⚠️ **Grove port topology:**
+> - **Cardputer Zero Grove** → **M5MonsterC5 (IN)** — occupied by MonsterC5
+>   - M5MonsterC5 has 2 more Grove ports: **GPS Module v1.1** (UART) + **Unit C6L** (OUT)
+> - **GPIO hat slot** — swap between NFC/CC1101 hat and LoRa hat (only one at a time)
+>   - NFC/CC1101 hat has extra Grove port: **SH1107 OLED** + **PN532/RFID2** (I2C)
+>   - LoRa hat: **Meshtastic LoRa** (UART)
+> - HDMI and SPI TFT use separate interfaces
+
+### M5Stack OLED Unit SH1107 (NFC/CC1101 GPIO Hat Grove Port — I2C Mode)
+
+```
+OLED Pin       →    NFC/CC1101 GPIO Hat Grove Port
+──────────          ──────────────────────────────
+VCC (5V/3.3V) →    VCC
+SDA            →    SDA — I2C data
+SCL            →    SCL — I2C clock
+GND            →    GND
+
+I2C address: 0x3C (default) or 0x3D
+```
+
+### M5Stack GPS Module v1.1 (M5MonsterC5 Grove Port — UART Mode)
+
+```
+GPS Module v1.1 connects to M5MonsterC5's Grove port (not Cardputer Zero)
+
+GPS Pin        →    M5MonsterC5 Grove Port
+──────────          ──────────────────────
+VCC            →    VCC
+TX             →    RX — UART receive
+RX             →    TX — UART transmit
+GND            →    GND
+
+GPS chip: AT6558 (GPS/BDS/GLONASS/GALILEO/QZSS)
+Antenna: AT3335 patch
+Baud rate: 9600 (default)
+```
+
+### M5Stack RFID2 Unit WS1850S (NFC/CC1101 GPIO Hat Grove Port — I2C Mode)
+
+```
+RFID2 Pin       →    NFC/CC1101 GPIO Hat Grove Port
+─────────           ──────────────────────────────
+GND (Black)     →    GND
+5V (Red)         →    VCC
+SDA (Yellow)     →    SDA — I2C data
+SCL (White)      →    SCL — I2C clock
+
+I2C address: 0x28 (WS1850S)
+Chip: WS1850S (MFRC522-compatible)
+Frequency: 13.56 MHz
+Tags: MIFARE Classic/Ultralight, NTAG213/215/216, ISO 14443-A/B
+```
+
+```bash
+rfid2-ctl probe              # Detect WS1850S on I2C
+rfid2-ctl read               # Read RFID/NFC tag
+rfid2-ctl detect             # Continuous tag detection
+rfid2-ctl dump               # Dump tag contents
+rfid2-ctl uid                 # Read UID only
+rfid2-ctl config              # Show wiring and configuration
+```
+
+### M5Stack Unit C6L (M5MonsterC5 Grove OUT — I2C + UART)
+
+```
+Grove chain: Cardputer Zero → M5MonsterC5 (IN) → C6L (OUT)
+  M5MonsterC5 also has GPS Module v1.1 on its other Grove port
+
+C6L Pin          →    M5MonsterC5 Grove OUT
+──────────            ──────────────────────
+GND (Black)     →    GND
+5V (Red)         →    VCC
+SDA/TX (Yellow)  →    SDA/TX — I2C data or UART TX
+SCL/RX (White)   →    SCL/RX — I2C clock or UART RX
+
+I2C mode:  SW1=ON,  SW2=ON  (LCD control via I2C)
+UART mode: SW1=OFF, SW2=OFF (serial communication)
+
+Chip: ESP32-C6 (160MHz RISC-V, 300KB SRAM, 4MB Flash)
+WiFi: 802.11ax (WiFi 6) + 802.11b/g/n 2.4GHz
+BLE: 5.0
+802.15.4: Zigbee 3.0 / Thread 1.3 ← unique capability
+LCD: 0.96" 128x64 SSD1306-compatible
+
+Note: C6L's unique value is Zigbee/Thread + BLE 5 (no other
+device covers 802.15.4). WiFi 6 is a bonus; M5MonsterC5
+is the primary WiFi attack radio.
+```
+
+```bash
+c6l-ctl probe                 # Detect C6L on I2C and UART
+c6l-ctl wifi scan              # WiFi 6 scan via C6L
+c6l-ctl wifi deauth <BSSID> <CH>  # Deauth via WiFi 6 radio
+c6l-ctl zigbee scan            # Scan Zigbee/Thread networks
+c6l-ctl zigbee sniffer         # Capture Zigbee packets
+c6l-ctl ble scan               # BLE 5 scan via C6L
+c6l-ctl lcd text "hello"       # Display text on C6L LCD
+c6l-ctl lcd status             # Show system status on C6L LCD
+c6l-ctl serial                 # Open serial console to C6L
+c6l-ctl flash c6l-companion    # Flash companion firmware
+c6l-ctl config                  # Show configuration and wiring
+```
 
 ---
 
@@ -1586,6 +2161,10 @@ Switch settings: SW1=OFF, SW2=OFF (UART mode)
 ║  LOGIN:     root / zeroday                               ║
 ║  TUI:       Fn+Tab  or  cyber_launcher                   ║
 ║  TERMINAL:  Fn+Return (zeroday-term)                    ║
+║  FILES:     zeroday-fm or fm                            ║
+║  NAV:       trail-ctl start                             ║
+║  GPS:       gps-ctl location                            ║
+║  OLED:      oled-ctl trail                              ║
 ║  PANIC:     Fn+P                                         ║
 ║  STEALTH:   Fn+Space                                     ║
 ║  OPENCODE:  Fn+O                                         ║
@@ -1611,6 +2190,7 @@ Switch settings: SW1=OFF, SW2=OFF (UART mode)
 ║                                                          ║
 ║  BT scan        sudo bt-scan                             ║
 ║  Bettercap      sudo bettercap -I wlan0                   ║
+║  BLE remote     zeroday-ble-remote start                  ║
 ║  IR capture     sudo ir-scan                             ║
 ║  Camera snap    cam-snap                                 ║
 ║  Camera OCR     cam-ocr                                  ║
@@ -1626,9 +2206,27 @@ Switch settings: SW1=OFF, SW2=OFF (UART mode)
 ║  Revshell       revshell-listen 4444                     ║
 ║  C2 payload     quick-c2 payload bash <IP> 4444           ║
 ║                                                          ║
+║  Nav trail      trail-ctl start                           ║
+║  Nav exit       trail-ctl exit                            ║
+║  Nav waypoint   trail-ctl mark "exit"                    ║
+║  GPS location   gps-ctl location                          ║
+║  GPS waypoint   gps-ctl save "entrance"                  ║
+║  GPS wardrive   gps-ctl wardrive                          ║
+║  RFID2 read     rfid2-ctl read                            ║
+║  RFID2 detect   rfid2-ctl detect                          ║
+║  C6L scan       c6l-ctl wifi scan                         ║
+║  C6L zigbee    c6l-ctl zigbee scan                       ║
+║  Ext display    ext-display hdmi mirror                   ║
+║  HDMI auto      (hotplug-detected, no manual setup needed) ║
+║  USB keyboard   (auto-detected by 70-usb-input.rules)     ║
+║  Jellyfin TV    jellyfin-tv                                ║
+║  Jellyfin GUI   jellyfinmediaplayer                       ║
+║  OLED status    oled-ctl trail                            ║
+║  OLED text      oled-ctl text "hello"                     ║
+║                                                          ║
 ║  Dongle         dongle-setup status                      ║
 ║  MonsterC5      monsterctl status                         ║
-║  JanOS TUI      install-janos run                         ║
+║  Meshtastic     monsterctl mesh start                      ║
 ║  Ragnar scan    ragnar-scan eth0 quick                    ║
 ║  Loot organize  loot-organize                             ║
 ║  Battery        cardputer-battery                        ║

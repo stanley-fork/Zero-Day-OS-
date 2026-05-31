@@ -4,15 +4,16 @@ set -euo pipefail
 # M5MonsterC5 ESP32C5 board controller for ZERO-DAY OS
 # Communicates with the MonsterC5 over UART (115200 baud) or USB serial
 #
-# The M5MonsterC5 is an ESP32C5-based WiFi offensive board that connects
-# to the Cardputer Zero via USB or serial. It runs JanOS (projectZero) firmware
-# and provides: deauth, evil twin, WPA3 SAE overflow, wardriving, sniffer,
-# karma, ARP poisoning, blackout, beacon spam, and more.
+# The M5MonsterC5 runs custom ZERO-DAY firmware forked from C5Lab/M5MonsterC5-CardputerADV:
+#   - WiFi attack radio (deauth, evil twin, WPA3 SAE, sniffer, karma, etc.) — from upstream
+#   - GPS Module v1.1 passthrough (AT6558 GNSS on Grove IN port)
+#   - Unit C6L passthrough (Zigbee/Thread/BLE on Grove OUT port)
+#   - Meshtastic LoRa mesh node (native on C5 radio)
+#   - All routed to Cardputer Zero via single USB/UART connection
 #
-# Usage: monsterctl <command> [args...]
-#
-# Based on: https://github.com/C5Lab/M5MonsterC5-CardputerADV
-# Firmware: https://github.com/C5Lab/projectZero
+# Upstream: https://github.com/C5Lab/M5MonsterC5-CardputerADV
+# Fork:     https://github.com/jayis1/M5MonsterC5-zeroday (custom ZERO-DAY firmware)
+# Firmware: firmware/monsterc5/
 
 MONSTER_PORT="${MONSTER_PORT:-}"
 MONSTER_BAUD=115200
@@ -453,22 +454,25 @@ case "$COMMAND" in
         ;;
 
     gps)
-        MODULE="${1:-cap}"
+        MODULE="${1:-m5}"
         PORT=$(detect_port) || exit 1
         echo "[*] Setting GPS module: $MODULE"
+        echo "[*] GPS Module v1.1 (AT6558) is connected to MonsterC5 Grove IN"
         case "$MODULE" in
-            atgm) send_cmd "$PORT" "gps_set atgm" ;;
-            m5)   send_cmd "$PORT" "gps_set m5" ;;
+            atgm)   send_cmd "$PORT" "gps_set atgm" ;;
+            m5)     send_cmd "$PORT" "gps_set m5" ;;
             ext|external) send_cmd "$PORT" "gps_set external" ;;
-            cap|onboard) send_cmd "$PORT" "gps_set cap" ;;
-            *) echo "[!] Unknown GPS module. Use: atgm, m5, external, cap" ;;
+            cap|onboard)  send_cmd "$PORT" "gps_set cap" ;;
+            raw|passthrough) send_cmd "$PORT" "gps_passthrough_start" ;;
+            *) echo "[!] Unknown GPS module. Use: atgm, m5, external, cap, raw" ;;
         esac
         ;;
 
     flash)
         echo "[*] M5MonsterC5 Firmware Flasher"
         echo ""
-        echo "This will flash the latest JanOS/projectZero firmware to the MonsterC5 board."
+        echo "Flashes custom ZERO-DAY firmware forked from C5Lab/M5MonsterC5-CardputerADV."
+        echo "This firmware adds GPS passthrough, C6L routing, and Meshtastic."
         echo ""
         echo "Prerequisites:"
         echo "  1. Install esptool: pip3 install esptool"
@@ -477,13 +481,14 @@ case "$COMMAND" in
         echo ""
         echo "Flashing options:"
         echo "  monsterctl flash web       — Open web flasher in browser"
-        echo "  monsterctl flash local     — Flash locally with esptool"
-        echo "  monsterctl flash cardputer — Flash CardputerADV app (ESP32S3)"
+        echo "  monsterctl flash local     — Flash ZERO-DAY firmware via esptool"
+        echo "  monsterctl flash upstream   — Flash upstream JanOS firmware"
+        echo "  monsterctl flash cardputer  — Flash CardputerADV app (ESP32S3)"
         echo ""
 
         case "${1:-}" in
             web)
-                echo "[*] Opening JanOS web flasher..."
+                echo "[*] Opening ZERO-DAY firmware flasher..."
                 echo "    https://c5lab.github.io/projectZero/janos_flash.html"
                 echo ""
                 echo "[*] For the CardputerADV app:"
@@ -504,20 +509,47 @@ case "$COMMAND" in
 
                 if [ ! -d "$FIRMWARE_DIR" ]; then
                     echo "[!] No firmware files found in $FIRMWARE_DIR"
-                    echo "[*] Download the latest release from:"
-                    echo "    https://github.com/C5Lab/projectZero/releases"
-                    echo "    https://github.com/C5Lab/M5MonsterC5-CardputerADV/releases"
-                    echo ""
-                    echo "[*] Extract to $FIRMWARE_DIR/ and re-run this command."
+                    echo "[*] Build from fork: https://github.com/jayis1/M5MonsterC5-zeroday"
+                    echo "[*] Place zeroday_monsterc5.bin in $FIRMWARE_DIR/"
                     exit 1
                 fi
 
-                echo "[*] Flashing MonsterC5 board on $FLASH_PORT..."
+                FIRMWARE_BIN=$(ls "$FIRMWARE_DIR"/zeroday_monsterc5*.bin 2>/dev/null | head -1)
+                if [ -z "$FIRMWARE_BIN" ]; then
+                    FIRMWARE_BIN=$(ls "$FIRMWARE_DIR"/*.bin 2>/dev/null | head -1)
+                fi
+
+                echo "[*] Flashing ZERO-DAY MonsterC5 firmware..."
+                echo "    Firmware: ${FIRMWARE_BIN}"
+                echo "    Port: $FLASH_PORT"
                 echo "[*] Make sure the board is in download mode (hold BOOT + RESET)"
+                "$ESPTOOL" --chip esp32c5 --port "$FLASH_PORT" --baud 460800 \
+                    write_flash -z 0x0 "$FIRMWARE_BIN"
+                echo ""
+                echo "[+] ZERO-DAY firmware flashed! Press RESET to start."
+                echo "[+] Features: WiFi attacks + GPS passthrough + C6L routing + Meshtastic"
+                ;;
+            upstream)
+                if ! command -v esptool.py &>/dev/null && ! command -v esptool &>/dev/null; then
+                    echo "[!] esptool not found. Install with: pip3 install esptool"
+                    exit 1
+                fi
+                ESPTOOL=$(command -v esptool.py 2>/dev/null || command -v esptool 2>/dev/null)
+                FLASH_PORT=$(detect_port) || exit 1
+                FIRMWARE_DIR="/opt/cardputer/monsterc5/upstream"
+
+                if [ ! -d "$FIRMWARE_DIR" ]; then
+                    echo "[!] No upstream firmware found in $FIRMWARE_DIR"
+                    echo "[*] Download from: https://github.com/C5Lab/projectZero/releases"
+                    echo "[*] Extract to $FIRMWARE_DIR/ and re-run."
+                    exit 1
+                fi
+
+                echo "[*] Flashing upstream JanOS firmware..."
                 "$ESPTOOL" --chip esp32c5 --port "$FLASH_PORT" --baud 460800 \
                     write_flash -z 0x0 "$FIRMWARE_DIR/janos_esp32c5.bin"
                 echo ""
-                echo "[+] Flash complete! Press RESET to start."
+                echo "[+] Upstream JanOS firmware flashed. Press RESET to start."
                 ;;
             cardputer)
                 if ! command -v esptool.py &>/dev/null && ! command -v esptool &>/dev/null; then
@@ -543,7 +575,7 @@ case "$COMMAND" in
                 echo "[+] Flash complete! Press RESET to start."
                 ;;
             *)
-                echo "[!] Specify flash method: web, local, or cardputer"
+                echo "[!] Specify flash method: web, local, upstream, or cardputer"
                 ;;
         esac
         ;;
@@ -588,6 +620,117 @@ case "$COMMAND" in
         esac
         ;;
 
+    gps_passthrough|gps_raw)
+        PORT=$(detect_port) || exit 1
+        echo "[*] Starting GPS passthrough from AT6558 (Grove IN)..."
+        echo "[*] GPS data will be forwarded to Cardputer Zero via serial"
+        echo "[*] Press Ctrl+C to stop"
+        send_cmd "$PORT" "gps_passthrough_start"
+        trap "send_cmd '$PORT' 'gps_passthrough_stop'; echo '[*] GPS passthrough stopped'; exit 0" INT TERM
+        cat "$PORT" 2>/dev/null
+        ;;
+
+    c6l_passthrough|c6l_raw)
+        PORT=$(detect_port) || exit 1
+        echo "[*] Starting C6L passthrough (Zigbee/Thread/BLE on Grove OUT)..."
+        echo "[*] Serial data from C6L forwarded to Cardputer Zero"
+        echo "[*] Press Ctrl+C to stop"
+        send_cmd "$PORT" "c6l_passthrough_start"
+        trap "send_cmd '$PORT' 'c6l_passthrough_stop'; echo '[*] C6L passthrough stopped'; exit 0" INT TERM
+        cat "$PORT" 2>/dev/null
+        ;;
+
+    c6l_cmd)
+        CMD="${1:-}"
+        if [ -z "$CMD" ]; then
+            echo "Usage: monsterctl c6l_cmd <command>"
+            echo ""
+            echo "  Send a command to the C6L via MonsterC5 passthrough."
+            echo "  Commands are forwarded to C6L on Grove OUT port."
+            echo ""
+            echo "  Examples:"
+            echo "    monsterctl c6l_cmd 'ZIGBEE_SCAN'"
+            echo "    monsterctl c6l_cmd 'BLE_SCAN'"
+            echo "    monsterctl c6l_cmd 'LCD:1:hello'"
+            echo "    monsterctl c6l_cmd 'RESET'"
+            exit 0
+        fi
+        PORT=$(detect_port) || exit 1
+        send_cmd "$PORT" "c6l_cmd $CMD"
+        sleep 1
+        timeout 5 cat "$PORT" 2>/dev/null
+        ;;
+
+    mesh|meshtastic)
+        SUBCMD="${1:-status}"
+        PORT=$(detect_port) || exit 1
+        case "$SUBCMD" in
+            status)
+                echo "[*] Meshtastic node status..."
+                send_cmd "$PORT" "mesh_status"
+                sleep 1
+                timeout 3 cat "$PORT" 2>/dev/null
+                ;;
+            start)
+                echo "[*] Starting Meshtastic node on MonsterC5..."
+                send_cmd "$PORT" "mesh_start"
+                sleep 2
+                timeout 3 cat "$PORT" 2>/dev/null
+                echo "[+] Meshtastic node running"
+                ;;
+            stop)
+                echo "[*] Stopping Meshtastic node..."
+                send_cmd "$PORT" "mesh_stop"
+                echo "[+] Meshtastic node stopped"
+                ;;
+            send)
+                DEST="${2:-}"
+                MSG="${3:-}"
+                if [ -z "$DEST" ] || [ -z "$MSG" ]; then
+                    echo "Usage: monsterctl mesh send <node|channel> <message>"
+                    exit 0
+                fi
+                send_cmd "$PORT" "mesh_send $DEST $MSG"
+                sleep 1
+                timeout 3 cat "$PORT" 2>/dev/null
+                ;;
+            config)
+                echo "[*] Meshtastic configuration..."
+                send_cmd "$PORT" "mesh_config"
+                sleep 1
+                timeout 3 cat "$PORT" 2>/dev/null
+                ;;
+            *)
+                echo "Usage: monsterctl mesh {status|start|stop|send|config}"
+                echo ""
+                echo "  Meshtastic LoRa mesh runs natively on the ESP32C5."
+                echo "  The C5 acts as a mesh node while also doing WiFi attacks."
+                echo ""
+                echo "  Subcommands:"
+                echo "    status           Show mesh node status"
+                echo "    start            Start Meshtastic node"
+                echo "    stop             Stop Meshtastic node"
+                echo "    send <dest> <msg>  Send mesh message"
+                echo "    config           Show mesh configuration"
+                ;;
+        esac
+        ;;
+
+    hub_status)
+        PORT=$(detect_port) || exit 1
+        echo "[*] MonsterC5 Hub Status"
+        echo ""
+        send_cmd "$PORT" "hub_status"
+        sleep 1
+        timeout 5 cat "$PORT" 2>/dev/null
+        echo ""
+        echo "[*] Grove topology:"
+        echo "  Cardputer Zero"
+        echo "    └── USB/UART ──→ M5MonsterC5 (ESP32C5 middle manager)"
+        echo "                       ├── Grove IN  ← GPS Module v1.1 (AT6558 UART)"
+        echo "                       └── Grove OUT → Unit C6L (ESP32-C6 Zigbee/BLE/LCD)"
+        ;;
+
     stop)
         PORT=$(detect_port) || exit 1
         echo "[*] Stopping current attack..."
@@ -624,48 +767,25 @@ case "$COMMAND" in
         fi
         ;;
 
-    janos|interactive|tui)
-        # Launch the JanOS-app Python TUI — the proper interactive controller
-        JANOS_SCRIPT="/opt/cardputer/janos-app/JanOS_app.py"
-
-        if [ ! -f "$JANOS_SCRIPT" ]; then
-            echo "[!] JanOS-app not installed"
-            echo "[*] Install with: install-janos install"
-            echo ""
-            echo "[*] JanOS-app provides a full interactive TUI for the MonsterC5:"
-            echo "    - Scan, select, and attack WiFi networks"
-            echo "    - Real-time sniffer, evil twin, karma, portal monitoring"
-            echo "    - Wardrive with GPS"
-            echo "    - SD card data browser"
-            echo ""
-            echo "    https://github.com/D3h420/JanOS-app"
-            exit 1
-        fi
-
-        if ! python3 -c "import serial" 2>/dev/null; then
-            echo "[!] pyserial not installed. Run: install-janos install"
-            exit 1
-        fi
-
-        PORT="${2:-}"
-        if [ -n "$PORT" ]; then
-            echo "[*] Launching JanOS-app on ${PORT}..."
-            python3 "$JANOS_SCRIPT" "$PORT"
-        else
-            echo "[*] Launching JanOS-app (interactive device selection)..."
-            python3 "$JANOS_SCRIPT"
-        fi
-        ;;
-
     help|--help|-h)
         echo "Usage: monsterctl <command> [args...]"
         echo ""
-        echo "M5MonsterC5 ESP32C5 board controller for ZERO-DAY OS"
-        echo "Communicates over UART/USB serial at 115200 baud"
+        echo "M5MonsterC5 ESP32C5 middle-manager controller for ZERO-DAY OS"
+        echo "Firmware: forked from C5Lab/M5MonsterC5-CardputerADV"
+        echo "  + GPS passthrough (AT6558 on Grove IN)"
+        echo "  + C6L routing (Zigbee/BLE/LCD on Grove OUT)"
+        echo "  + Meshtastic LoRa mesh (native on C5)"
+        echo ""
+        echo "Grove topology:"
+        echo "  Cardputer Zero"
+        echo "    └── USB/UART ──→ M5MonsterC5 (ESP32C5 middle manager)"
+        echo "                       ├── Grove IN  ← GPS Module v1.1 (AT6558 UART)"
+        echo "                       └── Grove OUT → Unit C6L (ESP32-C6 Zigbee/BLE/LCD)"
         echo ""
         echo "Detection:"
         echo "  status                 Show board status and connectivity"
         echo "  ping                   Ping the board (detect/check)"
+        echo "  hub_status             Show Grove topology and passthrough status"
         echo ""
         echo "Scanning:"
         echo "  scan                   Scan WiFi networks via MonsterC5"
@@ -699,20 +819,32 @@ case "$COMMAND" in
         echo "  wardrive [promisc|trace]    GPS-tagged WiFi scan"
         echo "  deauth_detect               Monitor for deauth frames"
         echo ""
+        echo "GPS (Grove IN passthrough):"
+        echo "  gps <atgm|m5|external|cap|raw>  Set GPS module type or raw passthrough"
+        echo "  gps_passthrough                 Stream raw GPS NMEA data"
+        echo ""
+        echo "C6L routing (Grove OUT passthrough):"
+        echo "  c6l_passthrough            Stream C6L serial data"
+        echo "  c6l_cmd <command>         Send command to C6L via MonsterC5"
+        echo "     Commands: ZIGBEE_SCAN, BLE_SCAN, LCD:1:text, RESET, etc."
+        echo ""
+        echo "Meshtastic (native on C5):"
+        echo "  mesh status               Show mesh node status"
+        echo "  mesh start                Start Meshtastic node"
+        echo "  mesh stop                 Stop Meshtastic node"
+        echo "  mesh send <dest> <msg>    Send mesh message"
+        echo "  mesh config               Show mesh configuration"
+        echo ""
         echo "Config:"
-        echo "  gps <atgm|m5|external|cap>  Set GPS module type"
         echo "  channel_time read <min|max>  Read channel dwell time"
         echo "  channel_time set <min|max> <100-1500>  Set dwell time"
         echo "  passwords                   Show captured passwords"
         echo ""
         echo "Firmware:"
         echo "  flash web                  Open web flasher in browser"
-        echo "  flash local                Flash JanOS firmware via esptool"
-        echo "  flash cardputer             Flash CardputerADV app"
-        echo ""
-        echo "Interactive:"
-        echo "  janos                     Launch JanOS-app full interactive TUI"
-        echo "                           (install with: install-janos install)"
+        echo "  flash local                Flash ZERO-DAY custom firmware"
+        echo "  flash upstream             Flash upstream JanOS firmware"
+        echo "  flash cardputer            Flash CardputerADV app (ESP32S3)"
         echo ""
         echo "Control:"
         echo "  stop                       Stop current attack"
@@ -723,8 +855,8 @@ case "$COMMAND" in
         echo ""
         echo "Capture files saved to: $LOOT_DIR/"
         echo ""
-        echo "M5MonsterC5 board: https://github.com/C5Lab/M5MonsterC5-CardputerADV"
-        echo "JanOS firmware:    https://github.com/C5Lab/projectZero"
+        echo "Upstream: https://github.com/C5Lab/M5MonsterC5-CardputerADV"
+        echo "Fork:     https://github.com/jayis1/M5MonsterC5-zeroday"
         ;;
 
     *)

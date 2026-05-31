@@ -113,7 +113,9 @@ impl Renderer {
     }
 
     pub fn draw_status_bar(&mut self, status: &StatusBar) {
-        let _ = status.render(self.width);
+        let _text = status.render(self.cols as u32);
+        // TODO: DRM/KMS framebuffer rendering — write _text to status bar row
+        // For now, the status bar data is available via status fields for DRM rendering
     }
 }
 

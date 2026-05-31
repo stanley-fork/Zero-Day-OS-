@@ -1,2 +1,4 @@
 # Bluetooth tools
 bluez
+python3-dbus
+python3-gi

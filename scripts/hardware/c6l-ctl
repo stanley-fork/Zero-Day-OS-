@@ -1,0 +1,649 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/c6l-ctl
+# M5Stack Unit C6L (ESP32-C6 + 0.96" LCD) controller for ZERO-DAY OS
+#
+# The C6L connects to M5MonsterC5's Grove OUT port. All C6L commands
+# are routed through the MonsterC5 middle-manager firmware via serial
+# multiplexing. Direct USB-C connection is also supported for flashing.
+#
+# Grove chain: Cardputer Zero → M5MonsterC5 (IN) → C6L (OUT)
+#   M5MonsterC5 routes: GPS (Grove IN) + C6L (Grove OUT) + WiFi attacks
+#
+# C6L's unique value: Zigbee/Thread (802.15.4) and BLE 5 —
+# capabilities no other device in ZERO-DAY OS provides.
+# WiFi 6 scan/deauth included as bonus; M5MonsterC5 is the
+# primary WiFi attack radio.
+#
+# Communication:
+#   Via MonsterC5:  monsterctl c6l_cmd <command>  (preferred)
+#   Direct USB-C:   /dev/ttyUSB0                  (for flashing/testing)
+#
+# Usage:
+#   c6l-ctl probe                Probe for Unit C6L via MonsterC5
+#   c6l-ctl flash <firmware>     Flash firmware to C6L (direct USB-C)
+#   c6l-ctl wifi scan             WiFi 6 scan via C6L
+#   c6l-ctl wifi deauth <BSSID> <CH>  Deauth via C6L WiFi 6 radio
+#   c6l-ctl zigbee scan           Scan Zigbee/Thread networks
+#   c6l-ctl zigbee sniffer       Start Zigbee packet capture
+#   c6l-ctl zigbee attack <opts> Zigbee network attacks
+#   c6l-ctl ble scan              BLE 5 scan via C6L
+#   c6l-ctl ble connect <MAC>    Connect to BLE peripheral
+#   c6l-ctl ble pair              Scan and pair C6L via direct BLE (no MonsterC5)
+#   c6l-ctl lcd text <msg>        Display text on C6L LCD
+#   c6l-ctl lcd status            Show system status on C6L LCD
+#   c6l-ctl serial                Open serial console to C6L (direct USB)
+#   c6l-ctl reset                  Reset C6L
+#   c6l-ctl config                 Show C6L configuration and wiring
+
+C6L_MODE="${C6L_MODE:-auto}"
+C6L_I2C_BUS="${C6L_I2C_BUS:-1}"
+C6L_I2C_ADDR="${C6L_I2C_ADDR:-0x3C}"
+C6L_UART="${C6L_UART:-/dev/ttyUSB0}"
+C6L_UART_BAUD="${C6L_UART_BAUD:-115200}"
+C6L_LCD_TYPE="${C6L_LCD_TYPE:-ssd1306}"
+C6L_BLE_MAC="${C6L_BLE_MAC:-}"  # Paired C6L BLE MAC address
+FIRMWARE_DIR="/opt/cardputer/c6l/firmware"
+WIFI_LOOT="/opt/cardputer/loot/wifi"
+ZIGBEE_LOOT="/opt/cardputer/loot/zigbee"
+
+c6l_send() {
+    local cmd="$1"
+    if [ "$C6L_MODE" = "ble" ]; then
+        # Direct BLE connection to C6L (no MonsterC5, no USB cable)
+        if [ -z "$C6L_BLE_MAC" ]; then
+            echo -e "${RED}No C6L BLE MAC set. Run: c6l-ctl ble scan${NC}"
+            return 1
+        fi
+        # Use bluetoothctl to send command over BLE
+        echo -e "${CYAN}[BLE → C6L ${C6L_BLE_MAC}] ${cmd}${NC}"
+        echo "$cmd" | bluetoothctl --timeout 5 <<< "connect ${C6L_BLE_MAC}" 2>/dev/null || \
+            gatttool -b "${C6L_BLE_MAC}" --char-write-req -a 0xFFE1 -n "$(echo -n "$cmd" | xxd -p)" 2>/dev/null || \
+            echo -e "${YELLOW}BLE command sent (may need pairing first)${NC}"
+    elif [ "$C6L_MODE" = "direct" ] || ! command -v monsterctl >/dev/null 2>&1; then
+        if [ ! -e "${C6L_UART}" ]; then
+            echo -e "${RED}No direct serial connection at ${C6L_UART}${NC}"
+            echo "  Connect C6L via USB-C or set C6L_UART"
+            return 1
+        fi
+        echo "$cmd" > "${C6L_UART}" 2>/dev/null
+    else
+        monsterctl c6l_cmd "$cmd" 2>/dev/null
+    fi
+}
+
+c6l_read() {
+    local duration="${1:-5}"
+    if [ "$C6L_MODE" = "direct" ] || ! command -v monsterctl >/dev/null 2>&1; then
+        timeout "$duration" cat "${C6L_UART}" 2>/dev/null || true
+    else
+        echo "[response via MonsterC5 passthrough]"
+    fi
+}
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+cmd_probe() {
+    echo -e "${BOLD}M5Stack Unit C6L (ESP32-C6) Probe${NC}"
+    echo ""
+    
+    echo -e "${CYAN}Scanning I2C bus ${C6L_I2C_BUS}...${NC}"
+    if [ -e "/dev/i2c-${C6L_I2C_BUS}" ]; then
+        local scan=$(i2cdetect -y "${C6L_I2C_BUS}" 2>/dev/null || true)
+        if echo "$scan" | grep -q "3C"; then
+            echo -e "  ${GREEN}LCD (SSD1306) detected at 0x3C${NC}"
+        elif echo "$scan" | grep -q "3D"; then
+            echo -e "  ${GREEN}LCD (SH1107) detected at 0x3D${NC}"
+        else
+            echo -e "  ${YELLOW}No LCD on I2C (C6L may be in UART mode)${NC}"
+        fi
+    else
+        echo -e "  ${YELLOW}I2C bus not available${NC}"
+    fi
+    
+    echo ""
+    echo -e "${CYAN}Scanning UART/USB...${NC}"
+    local uart_found=false
+    for dev in /dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyACM0 /dev/ttyACM1; do
+        if [ -e "$dev" ]; then
+            echo -e "  ${GREEN}Serial device: ${dev}${NC}"
+            uart_found=true
+            C6L_UART="$dev"
+            local vid=$(cat "/sys/class/tty/$(basename $dev)/../../idVendor" 2>/dev/null || echo "?")
+            local mfr=$(cat "/sys/class/tty/$(basename $dev)/../../manufacturer" 2>/dev/null || echo "?")
+            local prod=$(cat "/sys/class/tty/$(basename $dev)/../../product" 2>/dev/null || echo "?")
+            if [ "$vid" = "303a" ] || echo "$prod" | grep -qi "c6\|esp32"; then
+                echo -e "  ${GREEN}ESP32-C6 detected: ${mfr} ${prod}${NC}"
+            else
+                echo -e "  ${YELLOW}USB serial: ${mfr} ${prod} (vid=${vid})${NC}"
+            fi
+        fi
+    done
+    [ "${uart_found}" = false ] && echo -e "  ${YELLOW}No USB serial device found${NC}"
+    
+    echo ""
+    echo -e "${CYAN}Unit C6L Specifications:${NC}"
+    echo "  Chip:           ESP32-C6 (160MHz RISC-V, 300KB SRAM, 4MB Flash)"
+    echo "  WiFi:           802.11ax (WiFi 6), 802.11b/g/n 2.4GHz"
+    echo "  Bluetooth:     BLE 5.0"
+    echo "  802.15.4:      Zigbee 3.0 / Thread 1.3  ← unique capability"
+    echo "  LCD:            0.96\" 128x64 (SSD1306)"
+    echo "  Interface:      Grove HY2.0-4P (I2C + UART, via M5MonsterC5 OUT)"
+    echo "  USB-C:         Programming + power + serial"
+    echo ""
+    echo -e "${CYAN}Grove chain: Cardputer Zero → M5MonsterC5 (IN) →${NC}"
+    echo -e "${CYAN}  M5MonsterC5 has GPS Module v1.1 port + OUT port for C6L${NC}"
+    echo -e "${CYAN}C6L unique value: Zigbee/Thread + BLE 5 (no other device covers this)${NC}"
+    echo -e "${CYAN}WiFi 6 available as bonus; M5MonsterC5 is the primary WiFi attack radio${NC}"
+    echo ""
+    echo -e "${CYAN}C6L wiring — M5MonsterC5 Grove OUT port:${NC}"
+    echo "  C6L Pin            M5MonsterC5 OUT"
+    echo "  ──────────         ────────────────────"
+    echo "  GND (Black)     →   Pin 1 (GND)"
+    echo "  5V (Red)         →   Pin 2 (VCC 5V)"
+    echo "  SDA (Yellow)     →   Pin 3 (SDA — I2C data)"
+    echo "  SCL (White)      →   Pin 4 (SCL — I2C clock)"
+    echo ""
+    echo -e "${CYAN}C6L UART mode — M5MonsterC5 Grove OUT port:${NC}"
+    echo "  C6L Pin            M5MonsterC5 OUT"
+    echo "  ──────────         ────────────────────"
+    echo "  GND (Black)     →   Pin 1 (GND)"
+    echo "  5V (Red)         →   Pin 2 (VCC 5V)"
+    echo "  TX (Yellow)      →   Pin 3 (RX — UART receive)"
+    echo "  RX (White)       →   Pin 4 (TX — UART transmit)"
+    echo ""
+    echo "  Grove switches: SW1=OFF, SW2=OFF for UART mode"
+    echo "  Grove switches: SW1=ON, SW2=ON for I2C mode"
+}
+
+cmd_wifi_scan() {
+    echo -e "${BOLD}WiFi 6 scan via Unit C6L...${NC}"
+    mkdir -p "${WIFI_LOOT}"
+    
+    echo -e "${YELLOW}Scanning for WiFi networks (15s)...${NC}"
+    c6l_send "WIFI_SCAN" || return 1
+    local outfile="${WIFI_LOOT}/c6l_wifi_scan_$(date +%Y%m%d_%H%M%S).log"
+    c6l_read 15 > "${outfile}"
+    echo -e "${GREEN}Scan complete: ${outfile}${NC}"
+    cat "${outfile}"
+}
+
+cmd_wifi_deauth() {
+    local bssid="${1:-}"
+    local channel="${2:-}"
+    if [ -z "$bssid" ] || [ -z "$channel" ]; then
+        echo -e "${RED}Usage: c6l-ctl wifi deauth <BSSID> <CHANNEL>${NC}"
+        echo ""
+        echo "  BSSID    Target access point MAC address"
+        echo "  CHANNEL  Target channel (1-13 for 2.4GHz)"
+        echo ""
+        echo -e "${YELLOW}Note: M5MonsterC5 (monsterctl) is the primary WiFi attack device.${NC}"
+        echo "  Use the C6L for WiFi 6 (802.11ax) specific targets."
+        return 1
+    fi
+    
+    echo -e "${RED}${BOLD}WiFi deauth: ${bssid} on channel ${channel} via C6L${NC}"
+    echo -e "${YELLOW}Sending deauth frames via C6L WiFi 6 radio${NC}"
+    
+    c6l_send "WIFI_DEAUTH_${bssid}_${channel}" || return 1
+    echo -e "${GREEN}Deauth command sent${NC}"
+    echo "  Monitoring for 10s..."
+    c6l_read 10
+}
+
+cmd_zigbee_scan() {
+    echo -e "${BOLD}Zigbee/Thread network scan via Unit C6L...${NC}"
+    mkdir -p "${ZIGBEE_LOOT}"
+    
+    c6l_send "ZIGBEE_SCAN" || return 1
+    echo -e "${YELLOW}Scanning for Zigbee/Thread networks (15s)...${NC}"
+    local outfile="${ZIGBEE_LOOT}/zigbee_scan_$(date +%Y%m%d_%H%M%S).log"
+    c6l_read 15 > "${outfile}"
+    echo -e "${GREEN}Scan complete: ${outfile}${NC}"
+    cat "${outfile}"
+}
+
+cmd_zigbee_sniffer() {
+    echo -e "${BOLD}Zigbee packet capture via Unit C6L...${NC}"
+    echo "  Press Ctrl+C to stop"
+    mkdir -p "${ZIGBEE_LOOT}"
+    
+    c6l_send "ZIGBEE_SNIFFER_START" || return 1
+    local outfile="${ZIGBEE_LOOT}/zigbee_capture_$(date +%Y%m%d_%H%M%S).pcap"
+    echo -e "  Capturing to: ${outfile}"
+    c6l_read 300 > "${outfile}"
+    c6l_send "ZIGBEE_SNIFFER_STOP"
+    echo -e "${GREEN}Capture saved: ${outfile}${NC}"
+}
+
+cmd_zigbee_attack() {
+    local target="${1:-}"
+    if [ -z "$target" ]; then
+        echo "Usage: c6l-ctl zigbee attack <network_panid>"
+        echo ""
+        echo "Zigbee attack modes:"
+        echo "  <panid>          Join and intercept Zigbee network"
+        echo "  replay <file>     Replay captured Zigbee packets"
+        echo "  key <key>        Decrypt with known network key"
+        return 1
+    fi
+    
+    echo -e "${RED}${BOLD}Zigbee attack: targeting ${target}${NC}"
+    echo -e "${YELLOW}This sends Zigbee frames via the C6L's 802.15.4 radio${NC}"
+    
+    c6l_send "ZIGBEE_ATTACK_${target}" || return 1
+}
+
+cmd_ble_scan() {
+    echo -e "${BOLD}BLE 5 scan via Unit C6L...${NC}"
+    
+    c6l_send "BLE_SCAN" || return 1
+    echo -e "${YELLOW}Scanning for BLE devices (15s)...${NC}"
+    c6l_read 15
+}
+
+cmd_ble_connect() {
+    local mac="${1:-}"
+    if [ -z "$mac" ]; then
+        echo "Usage: c6l-ctl ble connect <MAC_ADDRESS>"
+        return 1
+    fi
+    
+    echo -e "${BOLD}Connecting to BLE device ${mac} via C6L...${NC}"
+    
+    c6l_send "BLE_CONNECT_${mac}" || return 1
+    echo -e "${YELLOW}Connected. Use 'c6l-ctl serial' for interactive GATT operations${NC}"
+}
+
+cmd_ble_pair() {
+    echo -e "${BOLD}${CYAN}Scanning for C6L BLE device...${NC}"
+    echo ""
+    
+    # Scan for ESP32-C6 devices with BLE
+    local devs=$(bluetoothctl --timeout 10 scan on 2>/dev/null | grep -i "ESP32\|C6L\|M5Stack" || true)
+    
+    if [ -z "$devs" ]; then
+        echo -e "${YELLOW}No C6L found. Ensure C6L is powered on and BLE advertising.${NC}"
+        echo -e "${CYAN}Tip: Power on C6L and run 'c6l-ctl ble pair' again${NC}"
+        return 1
+    fi
+    
+    echo -e "${GREEN}Found C6L devices:${NC}"
+    echo "$devs"
+    echo ""
+    echo -ne "${CYAN}Enter MAC address to pair: ${NC}"
+    read -r mac
+    
+    if [ -z "$mac" ]; then
+        echo -e "${RED}No MAC address entered${NC}"
+        return 1
+    fi
+    
+    echo -e "${CYAN}Pairing with ${mac}...${NC}"
+    bluetoothctl --timeout 10 <<< "pair ${mac}" 2>/dev/null
+    
+    # Save MAC for future BLE connections
+    echo "$mac" > /opt/cardputer/config/c6l_ble_mac 2>/dev/null || true
+    echo -e "${GREEN}C6L BLE MAC saved: ${mac}${NC}"
+    echo -e "${CYAN}Use C6L_MODE=ble c6l-ctl <command> for direct BLE communication${NC}"
+}
+
+cmd_lcd_text() {
+    local msg="${*:-C6L OK}"
+    echo -e "${BOLD}Displaying text on C6L LCD: ${msg}${NC}"
+    
+    c6l_send "LCD:1:${msg}" || return 1
+    echo -e "${GREEN}Text sent to C6L LCD${NC}"
+}
+
+cmd_lcd_status() {
+    echo -e "${BOLD}Sending system status to C6L LCD...${NC}"
+    
+    local ip=$(ip -4 addr show wlan0 2>/dev/null | grep -oP 'inet \K[\d.]+' | head -1 || echo "OFF")
+    local bat=$(cat /sys/class/power_supply/bq27220/capacity 2>/dev/null || echo "?")
+    local load=$(cat /proc/loadavg 2>/dev/null | awk '{print $1}' || echo "?")
+    
+    c6l_send "LCD:4:BAT:${bat}% IP:${ip} L:${load}" || true
+    echo -e "${GREEN}Status sent to C6L LCD${NC}"
+}
+    
+    echo -e "${YELLOW}Scanning for Zigbee/Thread networks (15s)...${NC}"
+    local outfile="${ZIGBEE_LOOT}/zigbee_scan_$(date +%Y%m%d_%H%M%S).log"
+    timeout 15 cat "${C6L_UART}" > "${outfile}" 2>/dev/null || true
+    echo -e "${GREEN}Scan complete: ${outfile}${NC}"
+    cat "${outfile}"
+}
+
+cmd_zigbee_sniffer() {
+    echo -e "${BOLD}Zigbee packet capture via Unit C6L...${NC}"
+    echo "  Press Ctrl+C to stop"
+    mkdir -p "${ZIGBEE_LOOT}"
+    
+    if [ ! -e "${C6L_UART}" ]; then
+        echo -e "${RED}No serial connection to C6L${NC}"
+        return 1
+    fi
+    
+    echo "ZIGBEE_SNIFFER_START" > "${C6L_UART}" 2>/dev/null || {
+        echo -e "${RED}Cannot communicate with C6L${NC}"
+        echo "  Flash companion firmware: c6l-ctl flash zigbee-sniffer"
+        return 1
+    }
+    
+    local outfile="${ZIGBEE_LOOT}/zigbee_capture_$(date +%Y%m%d_%H%M%S).pcap"
+    echo -e "  Capturing to: ${outfile}"
+    
+    timeout 300 cat "${C6L_UART}" > "${outfile}" 2>/dev/null || true
+    echo "ZIGBEE_SNIFFER_STOP" > "${C6L_UART}" 2>/dev/null || true
+    echo -e "${GREEN}Capture saved: ${outfile}${NC}"
+}
+
+cmd_zigbee_attack() {
+    local target="${1:-}"
+    if [ -z "$target" ]; then
+        echo "Usage: c6l-ctl zigbee attack <network_panid>"
+        echo ""
+        echo "Zigbee attack modes:"
+        echo "  <panid>          Join and intercept Zigbee network"
+        echo "  replay <file>     Replay captured Zigbee packets"
+        echo "  key <key>        Decrypt with known network key"
+        return 1
+    fi
+    
+    echo -e "${RED}${BOLD}Zigbee attack: targeting ${target}${NC}"
+    echo -e "${YELLOW}This sends Zigbee frames via the C6L's 802.15.4 radio${NC}"
+    
+    if [ ! -e "${C6L_UART}" ]; then
+        echo -e "${RED}No serial connection to C6L${NC}"
+        return 1
+    fi
+    
+    echo "ZIGBEE_ATTACK_${target}" > "${C6L_UART}" 2>/dev/null || {
+        echo -e "${RED}Cannot communicate with C6L${NC}"
+        echo "  Flash firmware: c6l-ctl flash zigbee-attacker"
+        return 1
+    }
+}
+
+cmd_ble_scan() {
+    echo -e "${BOLD}BLE 5 scan via Unit C6L...${NC}"
+    
+    if [ ! -e "${C6L_UART}" ]; then
+        echo -e "${RED}No serial connection to C6L${NC}"
+        return 1
+    fi
+    
+    echo "BLE_SCAN" > "${C6L_UART}" 2>/dev/null || {
+        echo -e "${RED}Cannot communicate with C6L${NC}"
+        return 1
+    }
+    
+    echo -e "${YELLOW}Scanning for BLE devices (15s)...${NC}"
+    timeout 15 cat "${C6L_UART}" 2>/dev/null || true
+}
+
+cmd_ble_connect() {
+    local mac="${1:-}"
+    if [ -z "$mac" ]; then
+        echo "Usage: c6l-ctl ble connect <MAC_ADDRESS>"
+        return 1
+    fi
+    
+    echo -e "${BOLD}Connecting to BLE device ${mac} via C6L...${NC}"
+    
+    if [ ! -e "${C6L_UART}" ]; then
+        echo -e "${RED}No serial connection to C6L${NC}"
+        return 1
+    fi
+    
+    echo "BLE_CONNECT_${mac}" > "${C6L_UART}" 2>/dev/null || {
+        echo -e "${RED}Cannot communicate with C6L${NC}"
+        return 1
+    }
+    
+    echo -e "${YELLOW}Connected. Use 'c6l-ctl serial' for interactive GATT operations${NC}"
+}
+
+cmd_lcd_text() {
+    local msg="${*:-C6L OK}"
+    echo -e "${BOLD}Displaying text on C6L LCD: ${msg}${NC}"
+    
+    if [ ! -e "${C6L_UART}" ]; then
+        echo -e "${RED}No serial connection to C6L${NC}"
+        echo "  Connect via USB-C or Grove UART"
+        return 1
+    fi
+    
+    echo "LCD:1:${msg}" > "${C6L_UART}" 2>/dev/null || {
+        echo -e "${RED}Cannot write to C6L${NC}"
+        return 1
+    }
+    echo -e "${GREEN}Text sent to C6L LCD${NC}"
+}
+
+cmd_lcd_status() {
+    echo -e "${BOLD}Sending system status to C6L LCD...${NC}"
+    
+    if [ ! -e "${C6L_UART}" ]; then
+        echo -e "${RED}No serial connection to C6L${NC}"
+        return 1
+    fi
+    
+    local ip=$(ip -4 addr show wlan0 2>/dev/null | grep -oP 'inet \K[\d.]+' | head -1 || echo "OFF")
+    local bat=$(cat /sys/class/power_supply/bq27220/capacity 2>/dev/null || echo "?")
+    local load=$(cat /proc/loadavg 2>/dev/null | awk '{print $1}' || echo "?")
+    
+    echo "LCD:4:BAT:${bat}% IP:${ip} L:${load}" > "${C6L_UART}" 2>/dev/null || true
+    echo -e "${GREEN}Status sent to C6L LCD${NC}"
+}
+
+cmd_serial() {
+    if [ "$C6L_MODE" != "direct" ]; then
+        echo -e "${YELLOW}Note: For interactive C6L serial console, use direct USB-C connection.${NC}"
+        echo -e "${YELLOW}Set C6L_MODE=direct and C6L_UART=/dev/ttyUSBx to use serial console.${NC}"
+        echo -e "${YELLOW}Otherwise, use: monsterctl c6l_passthrough${NC}"
+        echo ""
+    fi
+    
+    if [ ! -e "${C6L_UART}" ]; then
+        echo -e "${RED}No serial device at ${C6L_UART}${NC}"
+        echo "  Connect C6L via USB-C or set C6L_UART"
+        echo "  Set C6L_MODE=direct for serial console"
+        return 1
+    fi
+    
+    echo -e "${BOLD}Serial console to C6L (${C6L_UART} @ ${C6L_UART_BAUD})${NC}"
+    echo -e "  ${YELLOW}Direct USB-C only. Via MonsterC5: use monsterctl c6l_passthrough${NC}"
+    echo "  Press Ctrl+] to exit"
+    echo ""
+    
+    if command -v picocom >/dev/null 2>&1; then
+        picocom "${C6L_UART}" -b "${C6L_UART_BAUD}" 2>/dev/null
+    elif command -v minicom >/dev/null 2>&1; then
+        minicom -D "${C6L_UART}" -b "${C6L_UART_BAUD}" 2>/dev/null
+    else
+        stty -F "${C6L_UART}" "${C6L_UART_BAUD}" raw -echo 2>/dev/null || true
+        cat "${C6L_UART}" &
+        local cat_pid=$!
+        while IFS= read -r line; do
+            echo "$line" > "${C6L_UART}" 2>/dev/null
+        done
+        kill "$cat_pid" 2>/dev/null || true
+    fi
+}
+
+cmd_reset() {
+    echo -e "${BOLD}Resetting Unit C6L...${NC}"
+    c6l_send "RESET" || {
+        echo -e "${YELLOW}Cannot reach C6L via MonsterC5 — trying direct reset${NC}"
+        if [ -e "${C6L_UART}" ]; then
+            stty -F "${C6L_UART}" "${C6L_UART_BAUD}" 2>/dev/null || true
+            echo "RESET" > "${C6L_UART}" 2>/dev/null || true
+            echo -e "${GREEN}Reset command sent (direct)${NC}"
+        else
+            echo -e "${YELLOW}No connection — connect USB-C to reset${NC}"
+        fi
+        return 0
+    }
+    echo -e "${GREEN}Reset command sent (via MonsterC5)${NC}"
+}
+
+cmd_flash() {
+    local firmware="${1:-}"
+    if [ -z "$firmware" ]; then
+        echo -e "${BOLD}Available C6L firmwares:${NC}"
+        echo "  wifi-scanner       — WiFi 6 scanner + deauth"
+        echo "  zigbee-sniffer     — Zigbee/Thread packet sniffer"
+        echo "  zigbee-attacker   — Zigbee network attacker"
+        echo "  ble-scanner       — BLE 5 scanner + GATT client"
+        echo "  c6l-companion     — Full companion (default)"
+        echo ""
+        echo "Usage: c6l-ctl flash <firmware>"
+        echo "Firmware dir: ${FIRMWARE_DIR}"
+        return 1
+    fi
+    
+    local fw_path="${FIRMWARE_DIR}/${firmware}.bin"
+    if [ ! -f "$fw_path" ]; then
+        echo -e "${RED}Firmware not found: ${fw_path}${NC}"
+        ls "${FIRMWARE_DIR}/"*.bin 2>/dev/null || echo "  (none)"
+        return 1
+    fi
+    
+    if ! command -v esptool.py >/dev/null 2>&1; then
+        echo -e "${YELLOW}Installing esptool...${NC}"
+        pip3 install esptool 2>/dev/null || apt-get install -y esptool 2>/dev/null || {
+            echo -e "${RED}Cannot install esptool${NC}"; return 1; }
+    fi
+    
+    echo -e "${BOLD}Flashing ${firmware} to Unit C6L...${NC}"
+    echo "  Firmware: ${fw_path}"
+    echo "  Port:     ${C6L_UART}"
+    
+    esptool.py --chip esp32c6 --port "${C6L_UART}" --baud 460800 \
+        write_flash -z 0x0 "${fw_path}" || {
+        echo -e "${RED}Flash failed${NC}"
+        echo "  Hold BOOT + press RESET to enter download mode"
+        return 1
+    }
+    
+    echo -e "${GREEN}Firmware flashed${NC}"
+    echo "  Reset: c6l-ctl reset"
+    echo "  Console: c6l-ctl serial"
+}
+
+cmd_config() {
+    echo -e "${BOLD}M5Stack Unit C6L (ESP32-C6) Configuration${NC}"
+    echo ""
+    echo "  Chip:           ESP32-C6 (160MHz RISC-V)"
+    echo "  WiFi:           802.11ax (WiFi 6), 802.11b/g/n 2.4GHz"
+    echo "  Bluetooth:     BLE 5.0"
+    echo "  802.15.4:      Zigbee 3.0 / Thread 1.3"
+    echo "  LCD:            0.96\" 128x64 (SSD1306)"
+    echo "  Memory:         300KB SRAM, 4MB Flash"
+    echo "  Interface:      Grove HY2.0-4P (I2C + UART, via M5MonsterC5 OUT)"
+    echo "  USB-C:         Programming + power + serial"
+    echo ""
+    echo -e "${CYAN}Grove chain: Cardputer Zero → M5MonsterC5 (IN) →${NC}"
+    echo -e "${CYAN}  M5MonsterC5 has GPS Module v1.1 port + OUT port for C6L${NC}"
+    echo -e "${CYAN}C6L unique value: Zigbee/Thread + BLE 5 (no other device covers this)${NC}"
+    echo -e "${CYAN}WiFi 6 available as bonus; M5MonsterC5 is the primary WiFi attack radio${NC}"
+    echo ""
+    echo "  I2C Bus:        ${C6L_I2C_BUS}"
+    echo "  I2C Address:   ${C6L_I2C_ADDR} (LCD)"
+    echo "  UART Device:    ${C6L_UART}"
+    echo "  UART Baud:      ${C6L_UART_BAUD}"
+    echo "  Firmware Dir:   ${FIRMWARE_DIR}"
+}
+
+case "${1:-help}" in
+    probe)          cmd_probe ;;
+    flash)          cmd_flash "${2:-}" ;;
+    wifi)
+        case "${2:-}" in
+            scan)      cmd_wifi_scan ;;
+            deauth)    cmd_wifi_deauth "${3:-}" "${4:-}" ;;
+            *)         echo "Usage: c6l-ctl wifi {scan|deauth <BSSID> <CH>}"; exit 1 ;;
+        esac
+        ;;
+    zigbee)
+        case "${2:-}" in
+            scan)      cmd_zigbee_scan ;;
+            sniffer)   cmd_zigbee_sniffer ;;
+            attack)    cmd_zigbee_attack "${3:-}" ;;
+            *)         echo "Usage: c6l-ctl zigbee {scan|sniffer|attack <panid>}"; exit 1 ;;
+        esac
+        ;;
+    ble)
+        case "${2:-}" in
+            scan)      cmd_ble_scan ;;
+            connect)   cmd_ble_connect "${3:-}" ;;
+            pair)      cmd_ble_pair ;;
+            *)         echo "Usage: c6l-ctl ble {scan|connect <MAC>|pair}"; exit 1 ;;
+        esac
+        ;;
+    lcd)
+        case "${2:-}" in
+            text)      cmd_lcd_text "${@:3}" ;;
+            status)    cmd_lcd_status ;;
+            *)         echo "Usage: c6l-ctl lcd {text <msg>|status}"; exit 1 ;;
+        esac
+        ;;
+    serial)         cmd_serial ;;
+    reset)           cmd_reset ;;
+    config)          cmd_config ;;
+    help|-h|--help)
+        echo "c6l-ctl — M5Stack Unit C6L (ESP32-C6) controller for ZERO-DAY OS"
+        echo ""
+        echo "Usage: c6l-ctl <command> [args]"
+        echo ""
+        echo "Unit C6L: ESP32-C6 with WiFi 6, Zigbee/Thread, BLE 5, 0.96\" LCD"
+        echo "Connects via M5MonsterC5 Grove OUT (routed through middle manager)"
+        echo ""
+        echo "  Cardputer Zero ─→ MonsterC5 (ESP32C5) ─→ C6L (ESP32-C6)"
+        echo "                       ├── GPS v1.1 (Grove IN)"
+        echo "                       └── C6L (Grove OUT)"
+        echo ""
+        echo "Commands:"
+        echo "  probe                      Probe for C6L via MonsterC5"
+        echo "  flash <firmware>            Flash firmware to C6L (direct USB)"
+        echo "  wifi scan                   WiFi 6 scan via C6L"
+        echo "  wifi deauth <BSSID> <CH>    Deauth via C6L WiFi 6 radio"
+        echo "  zigbee scan                 Scan Zigbee/Thread networks"
+        echo "  zigbee sniffer              Capture Zigbee packets"
+        echo "  zigbee attack <panid>       Join/attack Zigbee network"
+        echo "  ble scan                    BLE 5 scan via C6L"
+        echo "  ble connect <MAC>           Connect to BLE peripheral"
+        echo "  ble pair                    Scan & pair C6L via direct BLE (no cables)"
+        echo "  lcd text <msg>              Display text on C6L LCD"
+        echo "  lcd status                  Show system status on C6L LCD"
+        echo "  serial                      Open serial console (direct USB)"
+        echo "  reset                       Reset C6L"
+        echo "  config                      Show configuration and wiring"
+        echo ""
+        echo "Grove port modes (on M5MonsterC5 OUT):"
+        echo "  I2C:  SW1=ON,  SW2=ON  (LCD control)"
+        echo "  UART: SW1=OFF, SW2=OFF (serial communication)"
+        echo ""
+        echo "Communication:"
+        echo "  Via MonsterC5:  monsterctl c6l_cmd <command>  (default, auto)"
+        echo "  Direct USB-C:   C6L_MODE=direct C6L_UART=/dev/ttyUSBx"
+        echo ""
+        echo "Environment:"
+        echo "  C6L_MODE=auto|direct   Communication mode (default: auto)"
+        echo "  C6L_I2C_BUS=1          I2C bus for LCD"
+        echo "  C6L_I2C_ADDR=0x3C       LCD I2C address"
+        echo "  C6L_UART=/dev/ttyUSB0   Direct serial device"
+        echo "  C6L_UART_BAUD=115200     Direct serial baud rate"
+        ;;
+    *)
+        echo "Unknown command: $1"
+        echo "Run: c6l-ctl help"
+        exit 1
+        ;;
+esac

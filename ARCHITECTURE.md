@@ -28,10 +28,12 @@
 zeroday-os/
 ├── compositor/                     # zeroday-comp — Rust Wayland compositor
 │   ├── src/
-│   │   ├── main.rs                 #   Compositor entry point (stub: launches client directly)
-│   │   ├── input.rs                #   Fn-key compositor-level bindings (panic, stealth, quick-launch)
-│   │   └── panic_handler.rs        #   SIGTERM/SIGHUP handler — kills children before exit
-│   ├── Cargo.toml                  #   Smithay 0.7 (commented), minimal deps for stub
+│   │   ├── main.rs                 #   Compositor entry point (--hdmi-fps, --hdmi-auto flags)
+│   │   ├── comp.rs                  #   Smithay dual-output compositor (LCD + HDMI mirror)
+│   │   ├── hdmi.rs                  #   HDMI hotplug detection (DRM uevent netlink + sysfs)
+│   │   ├── input.rs                #   Fn-key compositor-level bindings (panic, stealth, media, quick-launch)
+│   │   └── panic_handler.rs        #   SIGTERM/SIGHUP/SIGUSR1/SIGUSR2 handlers
+│   ├── Cargo.toml                  #   Smithay 0.7 + minimal deps
 │   ├── Cross.toml                  #   cross-rs config (aarch64 target, PKG_CONFIG paths)
 │   ├── Cross.Dockerfile            #   Custom cross-rs image with arm64 Wayland/DRM dev libs
 │   └── Makefile                    #   deps, cross-build, build-release, strip targets
@@ -45,6 +47,31 @@ zeroday-os/
 │   │   ├── status_bar.rs           #   Battery%, WiFi IP, CPU temp, load, time
 │   │   └── render.rs               #   Screen buffer renderer (TODO: DRM/KMS framebuffer)
 │   ├── Cargo.toml                  #   portable-pty, vte, clap, nix, libc, ctrlc
+│   └── Makefile                    #   cross-build, build-release, strip targets
+│
+├── explorer/                         # zeroday-fm — Rust TUI file explorer
+│   ├── src/
+│   │   ├── main.rs                 #   CLI entry point (clap, starts app)
+│   │   ├── app.rs                  #   App state, navigation, history, bookmarks, clipboard
+│   │   ├── ui.rs                   #   TUI rendering (crossterm): file list, hex view, metadata
+│   │   ├── input.rs                #   Key/mouse handling for all modes
+│   │   ├── fsops.rs                #   File operations: copy, move, delete, rename, mkdir, zip
+│   │   ├── hexview.rs              #   Hex dump viewer with scroll and ASCII column
+│   │   ├── search.rs               #   Recursive file search with regex support
+│   │   └── bookmarks.rs            #   Bookmark management (load/save/navigate)
+│   ├── Cargo.toml                  #   crossterm, walkdir, regex, chrono, zip, clap, nix
+│   └── Makefile                    #   cross-build, build-release, strip targets
+│
+├── trail/                             # zeroday-trail — Rust breadcrumb navigation daemon
+│   ├── src/
+│   │   ├── main.rs                 #   CLI/daemon loop (drop/exit/pause modes, PID/mode files)
+│   │   ├── breadcrumb.rs           #   Breadcrumb, AccessPoint, ExitGuidance, similarity scoring
+│   │   ├── scanner.rs              #   WiFi AP scanner (iw/iwlist/nmcli) + GPS reader (gpsd)
+│   │   ├── store.rs                #   JSONL breadcrumb storage + GPX export
+│   │   ├── guide.rs                #   Exit pathfinding engine + Overwatch threat detection
+│   │   └── config.rs               #   Configuration from /etc/zeroday/trail/config.env
+│   ├── trail-ctl                    #   Bash control script (start/mark/exit/stats/dump/clear)
+│   ├── Cargo.toml                  #   clap, serde/serde_json, nix, env_logger
 │   └── Makefile                    #   cross-build, build-release, strip targets
 │
 ├── pi-gen/                          # Forked pi-gen with custom stages
@@ -63,12 +90,14 @@ zeroday-os/
 │   │   ├── 05-terminal-st             #   st terminal, fbterm fallback, foot
 │   │   ├── 06-flipper-tui             #   Flipper Zero TUI (JanOS-app installer)
 │   │   ├── 07-zeroday-comp             #   Rust Wayland compositor (pre-built binary)
-│   │   └── 08-terminal-term              #   Rust terminal emulator (pre-built binary)
+│   │   ├── 08-terminal-term              #   Rust terminal emulator (pre-built binary)
+│   │   ├── 09-file-manager                #   Rust file explorer (pre-built binary)
+│   │   └── 10-trail-nav                   #   Rust breadcrumb navigation (pre-built binary)
 │   ├── stage4/                       # Hacking tools (our Stage B)
 │   │   ├── 00-kali-repos             #   Add Kali rolling repos
 │   │   ├── 01-wifi-tools             #   aircrack-ng, hcxdumptool, hostapd
 │   │   ├── 02-network-tools          #   nmap, gobuster, dsniff, responder, chisel
-│   │   ├── 03-bluetooth-tools        #   bluez, bettercap
+│   │   ├── 03-bluetooth-tools        #   bluez, bettercap, BLE Remote GATT server
 │   │   ├── 04-exploit-tools          #   sqlmap, exploitdb, john, hydra, strace
 │   │   ├── 05-reverse-shell-kit      #   netcat, socat, ncat
 │   │   ├── 06-ir-tools               #   lirc, ir-utils
@@ -79,7 +108,9 @@ zeroday-os/
 │   │   ├── 11-subghz-nfc-tools       #   Sub-GHz CC1101 + NFC PN532 tools
 │   │   ├── 12-meshtastic-tools       #   Meshtastic LoRa mesh
 │   │   ├── 13-media-tools             #   ffplay, alsa-utils (radio + walkie-talkie)
-│   │   └── 14-games-entertainment      #   DOOM, RetroArch, yt-dlp, cage, mpv
+│   │   ├── 14-games-entertainment    #   DOOM, RetroArch, yt-dlp, cage, mpv, jellyfin-tv
+│   │   ├── 15-ragnar                 #   Recon scripts
+│   │   └── 16-jellyfin-desktop       #   Jellyfin Media Player (Qt5, built from source for arm64)
 │   ├── stage5/                       # Zero-touch setup (our Stage C)
 │   │   ├── 00-first-boot             #   First-boot wizard
 │   │   ├── 01-opencode               #   OpenCode CLI install
@@ -124,6 +155,9 @@ zeroday-os/
 │   │   ├── bt-deep
 │   │   ├── bt-attack
 │   │   └── ble-gatt
+│   ├── ble-remote/
+│   │   ├── gatt_server.py           # BlueZ D-Bus GATT server (Python)
+│   │   └── ANDROID_API.md           # Android companion app BLE protocol
 │   ├── reverse/
 │   │   ├── revshell-listen
 │   │   ├── revshell-gen
@@ -196,7 +230,7 @@ zeroday-os/
 │   ├── retroarch/
 │   │   └── retroarch.cfg             #   RetroArch config (LCD optimized)
 │   ├── xorg/
-│   │   └── xorg.conf                 #   Minimal X config for ST7789
+│   │   └── xorg.conf                 #   Dual-output X config (LCD + HDMI + USB keyboard)
 │   ├── bash/
 │   │   └── .bashrc                   #   Custom PS1, aliases, PATH
 │   └── motd/
@@ -232,10 +266,14 @@ zeroday-os/
 │         │    dtoverlay=rx8130ce                               │
 │         │    dtoverlay=bq27220                                 │
 │         │    dtoverlay=ir-trx                                  │
-│         │    gpu_mem=16                                        │
+│         │    gpu_mem=32                                        │
 │         │    disable_camera_led=1                             │
-│         │    hdmi_force_hotplug=0                             │
-│         │    max_framebuffers=1                               │
+│         │    hdmi_force_hotplug=1                             │
+│         │    max_framebuffers=2                               │
+│         │    hdmi_cvt=1920 1080 30 2 0 0 0                   │
+│         │    hdmi_drive=2                                     │
+│         │    hdmi_group=2                                     │
+│         │    hdmi_mode=82                                     │
 │         │                                                       │
 │  [3.0s] systemd (PID 1)                                       │
 │         │  ┌─────────────────────────────────────┐             │
@@ -260,9 +298,9 @@ zeroday-os/
 │         │                                                       │
 │  [5.0s] cyber_launcher (Pygame GUI)                           │
 │         │  Renders full-screen on ST7789v3                    │
-│         │  16 category icons in grid layout                    │
+│         │  HDMI mirror: 1920x1080@30fps when plugged in     │
 │         │  Terminal: zeroday-term (Wayland) or st (X11)        │
-│         │  HDMI output: ZERODAY_DISPLAY=hdmi                   │
+│         │  HDMI output: auto-detected via DRM uevent netlink │
 │         │                                                       │
 │  [7.0s] READY                                                  │
 │         │  WiFi: down (stealth by default)                     │
@@ -277,11 +315,12 @@ zeroday-os/
 
 **Key boot decisions:**
 - **Wayland GUI primary.** Boot chain: `zeroday-comp` (Rust Wayland compositor, ~2MB) → `cage` (Wayland kiosk, ~3MB) → `Xorg+i3` (TUI fallback, ~30MB). The `zeroday-comp` compositor is tried first; if it fails, systemd `OnFailure=` automatically starts the next tier.
-- **zeroday-comp** is currently a stub launcher that starts cyber_launcher directly. The full Smithay 0.7 DRM/KMS backend is work-in-progress. The boot chain gracefully falls back to cage if the compositor binary is missing or crashes.
+- **zeroday-comp** is a dual-output Wayland compositor with HDMI hotplug support. It renders simultaneously to ST7789V LCD (320x170@30fps) and HDMI-A-1 (1920x1080@30fps, mirror mode). `hdmi.rs` monitors DRM uevent netlink for hotplug events and reconfigures outputs on plug/unplug. The boot chain gracefully falls back to cage then Xorg+i3.
+- **HDMI is hotplug-auto-detected.** `hdmi_force_hotplug=1` + `max_framebuffers=2` in config.txt enables dual-output. udev rule `99-hdmi-hotplug.rules` triggers `hdmi-hotplug-notify` which sends SIGUSR1 to zeroday-comp for output reconfiguration. PulseAudio auto-switches audio to HDMI when connected.
 - **zeroday-term** is the primary terminal under Wayland (installed as `/usr/local/bin/zeroday-term` with `st → zeroday-term` symlink). Under X11 fallback, `stterm` is used.
 - **Radios OFF at boot.** WiFi and Bluetooth are disabled by default. Activated only when you need them. Zero RF signature on power-up.
-- **GPU mem capped at 16MB.** We're running a single-app GUI on a tiny screen. The other 496MB belongs to userland.
-- **HDMI disabled by default.** `hdmi_force_hotplug=0`. The 1.9" LCD is the primary display. HDMI can be enabled via `export ZERODAY_DISPLAY=hdmi` for YouTube/DOOM/retro gaming on external monitor.
+- **GPU mem capped at 32MB.** Dual-output rendering (LCD + HDMI mirror) needs more GPU memory than single LCD. `gpu_mem=32` in config.txt.
+- **HDMI auto-detected via hotplug.** `hdmi_force_hotplug=1` + `max_framebuffers=2` enables dual-output. When HDMI is plugged in, zeroday-comp mirrors to 1920x1080@30fps. `ZERODAY_DISPLAY=hdmi` still works for manual override. udev handles pulseaudio audio switching.
 - **GUI launcher uses big icons.** 16 categories displayed as large, high-contrast icons optimized for the 1.9" screen. Full-color, full-icon grid — not a text list.
 
 ---
@@ -301,9 +340,10 @@ Every megabyte is accounted for:
 | **dropbear (SSH)** | ~2 MB | On-demand only, not running at boot |
 | **wpa_supplicant** | ~8 MB | Started on-demand only |
 | **bluetoothd** | ~10 MB | Started on-demand only |
+| **BLE Remote** | ~15 MB | Python GATT server + dbus (systemd, low CPU when idle) |
 | **Reserved GPU** | ~16 MB | Capped via `gpu_mem=16` |
-| **TOTAL SYSTEM** | **~101 MB** | |
-| **FREE FOR TOOLS** | **~411 MB** | Enough for nmap, aircrack, DOOM, retro gaming |
+| **TOTAL SYSTEM** | **~116 MB** | |
+| **FREE FOR TOOLS** | **~396 MB** | Enough for nmap, aircrack, DOOM, retro gaming |
 
 When a heavy tool runs (like Metasploit), the GUI can be backgrounded. The `power-mode stealth` profile kills cage and drops to fbterm direct, saving ~28MB. YouTube video playback uses mpv (Wayland-native), which streams without buffering the full file.
 
@@ -423,7 +463,7 @@ apt install -y --no-install-recommends \
 #   2. rm -f ~/.bash_history /tmp/* /opt/cardputer/loot/*
 #   3. history -c && history -w
 #   4. tmux kill-server
-#   5. clear && echo "ZERODAY OS v0.1 — Login:" 
+#   5. clear && echo "ZERODAY OS v4.3.0 — Login:" 
 #   6. rfkill block all wireless
 #   7. echo "$(date) PANIC" >> /opt/cardputer/panic.log
 
@@ -545,14 +585,20 @@ apt install -y --no-install-recommends \
 #   PYGAME_HIDE_SUPPORT_PROMPT=1
 #   SDL_RENDER_DRIVER=opengles2
 #   ZERODAY_COMP_DRM=/dev/dri/card0
-#   ZERODAY_COMP_RESOLUTION=320x170
+#   ZERODAY_LCD_WIDTH=320
+#   ZERODAY_LCD_HEIGHT=170
 #   ZERODAY_COMP_FPS=30
 #   ZERODAY_COMP_NO_CURSOR=1
+#   ZERODAY_HDMI=0                # Set to 1 by hdmi-hotplug-notify on plug
+#   ZERODAY_HDMI_WIDTH=1920
+#   ZERODAY_HDMI_HEIGHT=1080
+#   ZERODAY_HDMI_FPS=30
+#   ZERODAY_DISPLAY=lcd           # Or "hdmi" when HDMI connected
 
 # Systemd service: zeroday-comp.service (PRIMARY)
 #   After=zeroday-boot.service
 #   Conflicts=zeroday-gui.service zeroday-tui.service
-#   ExecStart=/usr/local/bin/zeroday-comp --client /usr/local/bin/cyber_launcher --no-cursor
+#   ExecStart=/usr/local/bin/zeroday-comp --client /usr/local/bin/cyber_launcher --no-cursor --hdmi-fps 30 --hdmi-auto
 #   OnFailure=zeroday-gui.service (falls back to cage)
 
 # zeroday-gui.service (cage, FALLBACK tier 1)
@@ -563,7 +609,7 @@ apt install -y --no-install-recommends \
 # Boot priority: zeroday-comp → cage (zeroday-gui) → Xorg+i3 (zeroday-tui)
 chroot "${ROOTFS_DIR}" systemctl enable zeroday-comp.service
 
-# Current status: stub launcher (launches client directly, no DRM rendering yet)
+# Current status: dual-output compositor with HDMI hotplug (hdmi.rs + DRM uevent netlink)
 # Smithay 0.7 trait impls (SeatHandler, XdgShellHandler, etc.) are WIP
 # Falls back to cage gracefully when binary missing or crashes
 ```
@@ -601,6 +647,41 @@ chroot "${ROOTFS_DIR}" ln -sf zeroday-term /usr/local/bin/st
 #   - No Smithay dependency — renders via DRM/KMS framebuffer (WIP)
 
 # If zeroday-term is missing, stterm (st) is used as fallback
+```
+
+#### 03-stage/09-file-manager
+```bash
+# zeroday-fm — Custom Rust TUI file explorer (PRIMARY file manager)
+# Pre-built binary: explorer/target/aarch64-unknown-linux-gnu/release/zeroday-fm
+# ~1.9MB stripped, panic=abort, LTO, opt-level=z
+
+# Install the pre-built file explorer binary
+install -m 755 "${FM_BIN}" "${ROOTFS_DIR}/usr/local/bin/zeroday-fm"
+
+# Create compatibility symlink: fm -> zeroday-fm
+chroot "${ROOTFS_DIR}" ln -sf zeroday-fm /usr/local/bin/fm
+
+# Configuration: /etc/zeroday/fm.env
+#   ZERODAY_FM_SHOW_HIDDEN=0
+#   ZERODAY_FM_SORT=type
+#   ZERODAY_FM_START_DIR=/root
+
+# Features:
+#   - TUI file navigation (arrow keys, j/k, Enter, Backspace)
+#   - File ops: Ctrl+Y copy, Ctrl+X cut, Ctrl+V paste
+#   - Delete (Ctrl+D), Rename (Ctrl+R), Mkdir (Ctrl+N)
+#   - Hex viewer (Alt+H) for binary inspection
+#   - Metadata display (Alt+M): permissions, size, owner, timestamps
+#   - Search (Ctrl+F or /): regex pattern matching
+#   - Bookmarks (Alt+B): Home, Root, Loot, Config, Capture, /tmp
+#   - Archive support: Ctrl+Z creates zip, Ctrl+E extracts zip
+#   - File marking: Space, Ctrl+A mark all, Ctrl+U unmark
+#   - Sort cycle: Ctrl+S (Type→Name→Size→Date)
+#   - Hidden files toggle: .
+#   - Optimized for 320x170 LCD, 46-key keyboard, no mouse
+#   - Fn-key compositor bindings work inside (Fn+P panic, Fn+Space stealth)
+
+# If zeroday-fm is missing, mc (midnight commander) is available as fallback
 ```
 
 #### 03-stage/07-gui-launcher
@@ -721,13 +802,30 @@ apt -t kali-rolling install -y --no-install-recommends responder
 ```bash
 apt install -y --no-install-recommends \
     bluez \
-    bluez-hid2hci
+    bluez-hid2hci \
+    python3-dbus \
+    python3-gi
 
 # Bettercap — MITM framework (Kali, best-effort)
 # Install bt-scan, bt-deep, bt-attack, ble-gatt
 # to /usr/local/bin/
 apt -t kali-rolling install -y --no-install-recommends bettercap
+
+# BLE Remote API — Flipper Zero-style GATT server for Android/iOS companion
+# Install gatt_server.py to /opt/cardputer/ble-remote/
+# Install zeroday-ble-remote wrapper to /usr/local/bin/
+# Enable zeroday-ble-remote.service (systemd)
 ```
+
+The BLE Remote GATT server (`gatt_server.py`) uses BlueZ D-Bus API to expose 6 characteristics:
+- Command RX (`fe5e0001`) — Write — receives commands from app
+- Command TX (`fe5e0002`) — Notify — sends responses to app
+- File TX (`fe5e0003`) — Notify — streams file data to app
+- File RX (`fe5e0004`) — Write — receives file data from app
+- Status (`fe5e0005`) — Read/Notify — device status JSON (battery, WiFi, CPU, disk)
+- Screen (`fe5e0006`) — Notify — screen capture stream
+
+Commands: `ping`, `status`, `panic`, `stealth`, `wifi:on|off|scan`, `bt:on|off`, `shell:<cmd>`, `file:ls|get|put`, `c6l:<cmd>`, `mesh:<cmd>`, `screen`, `reboot`, `shutdown`. See `scripts/hardware/ble-remote/ANDROID_API.md` for the full Kotlin/BLE protocol.
 
 #### 04-stage/04-exploit-tools
 ```bash
@@ -831,7 +929,7 @@ apt install -y --no-install-recommends \
 #### 04-stage/11-subghz-nfc-tools
 ```bash
 # CC1101 Sub-GHz transceiver tools (SPI, 2.54mm 14-pin ExtPort)
-# PN532 NFC/RFID module tools (I2C, Grove HY2.0-4P port)
+# PN532 NFC/RFID module tools (I2C, NFC/CC1101 GPIO hat Grove port)
 
 # Sub-GHz: subghz-scan, subghz-record, subghz-replay
 # NFC: nfc-read, nfc-clone, nfc-emulate
@@ -848,7 +946,7 @@ apt install -y --no-install-recommends \
 
 #### 04-stage/12-meshtastic-tools
 ```bash
-# Meshtastic LoRa mesh networking (UART, Grove HY2.0-4P port)
+# Meshtastic LoRa mesh networking (UART, LoRa hat Grove port)
 # PN532 NFC and Meshtastic LoRa share the Grove port — cannot be used simultaneously
 
 # mesh-chat, mesh-setup scripts
@@ -982,9 +1080,51 @@ apt install -y --no-install-recommends \
 # If multi-window Wayland is needed:
 #   apt install sway
 # See configs/sway/config for ZERO-DAY OS keybindings
+
+# ─────────────────────────────────────────────────────────────
+# Jellyfin TV — TUI media client + cast receiver
+# ─────────────────────────────────────────────────────────────
+# jellyfin-tv (TUI script): /usr/local/bin/jellyfin-tv
+#   Interactive menu: connect, browse, cast, play URL, local media, webradio
+#   Auto-detects HDMI: fullscreen 1080P on HDMI, audio-only on LCD
+#   Fn+M launches jellyfin-tv from compositor (input.rs: FnAction::MediaBox)
+#
+# jellyfin-mpv-shim: Python cast receiver for Jellyfin servers
+#   Discovers Jellyfin servers on LAN, receives cast commands
+#   Config: /opt/cardputer/config/jellyfin-mpv-shim/mpv-shim.conf
 ```
 
-### Stage 5 — Zero-Touch Setup (Custom)
+#### 04-stage/16-jellyfin-desktop
+```bash
+# ─────────────────────────────────────────────────────────────
+# Jellyfin Media Player — Qt5 desktop client (built from source)
+# ─────────────────────────────────────────────────────────────
+# No arm64 .deb available — built on-target in pi-gen chroot
+# Build time: ~30-60 min (Qt5 WebEngine is the slow part)
+# Image size increase: ~150-200MB (Qt5 WebEngine runtime)
+
+# Stage 00-packages: Qt5 runtime libs + QML modules + build deps (including python3-pip)
+# Stage 01-run.sh:
+#   1. Upgrade meson to >=1.3.0 via pip (bookworm has 1.0.1, libplacebo needs >=1.3.0)
+#   2. Build wayland-protocols 1.36 from source (bookworm has 1.31, mpv needs color-manager-v1)
+#   3. Build libmpv from source (mpv-build with -Dlibmpv=true -Dpipewire=disabled)
+#   4. Build jellyfin-media-player v1.12.0 from source (cmake + ninja)
+#   5. Install jellyfinmediaplayer to /usr/local/bin/
+#   6. Create desktop entry + mpv.conf + jellyfinmediaplayer.conf
+#   7. Purge build deps (including python3-pip, meson pip install), autoremove, clean
+
+# Config: /etc/xdg/jellyfinmediaplayer/mpv.conf (ARM-optimized)
+# Config: /etc/xdg/jellyfinmediaplayer/jellyfinmediaplayer.conf (auto-discover)
+# Desktop entry: /usr/share/applications/jellyfin-mediaplayer.desktop
+# Binary: /usr/local/bin/jellyfinmediaplayer
+
+# Launch: jellyfin-tv (TUI) → press D → jellyfinmediaplayer (Qt5 GUI)
+# Or directly: jellyfinmediaplayer (QT_QPA_PLATFORM=wayland)
+```
+
+# ─────────────────────────────────────────────────────────────────────
+# Wayland GUI — Primary display system
+# ─────────────────────────────────────────────────────────────────────
 
 #### 05-stage/00-first-boot
 ```bash
@@ -1000,7 +1140,7 @@ apt install -y --no-install-recommends \
 # 7. Disable first-boot.service (one-shot)
 
 cat > /etc/zeroday-release << 'EOF'
-ZERO-DAY OS v0.1-pre
+ZERO-DAY OS v4.3.0-pre
 Build: $(date +%Y%m%d)
 Kernel: $(uname -r)
 Hardware: M5Stack Cardputer Zero (CM0)
@@ -1181,7 +1321,7 @@ printf '\033[2J\033[H'
 rfkill block all 2>/dev/null
 
 # Phase 5: Display clean login
-echo "ZERODAY OS v0.1 — Login:"
+echo "ZERODAY OS v4.3.0 — Login:"
 echo "================================"
 echo "Password: "
 
@@ -1359,19 +1499,17 @@ apt install -y --no-install-recommends rtl-433
 
 ## 8b. NFC / RFID System (PN532)
 
-The PN532 NFC/RFID module connects via I2C (or UART) on the Grove HY2.0-4P port. It supports reading, cloning, and emulating common NFC tag types.
+The PN532 NFC/RFID module connects via I2C on the NFC/CC1101 GPIO hat's extra Grove port. The PN532/RFID2 hat and LoRa hat swap the same slot — only one at a time.
 
-### Hardware Wiring (Grove HY2.0-4P — I2C Mode)
+### Hardware Wiring (NFC/CC1101 GPIO Hat Grove Port — I2C Mode)
 
 ```
-  PN532 Module    Cardputer Zero Grove
-  ────────────    ────────────────────
-  VCC          →   Pin 1 (VCC 3.3V/5V)
-  SDA          →   Pin 2 (SDA — I2C data)
-  SCL          →   Pin 3 (SCL — I2C clock)
-  GND          →   Pin 4 (GND)
-  
-  Set PN532 switches: SW1=ON, SW2=ON (I2C mode)
+  PN532 Module    NFC/CC1101 GPIO Hat Grove Port
+  ────────────    ───────────────────────────────
+  VCC          →   VCC
+  SDA          →   SDA — I2C data
+  SCL          →   SCL — I2C clock
+  GND          →   GND
 ```
 
 ### Supported Tag Types
@@ -1418,21 +1556,29 @@ pip3 install nfcpy 2>/dev/null || true
 
 ## 8c. Meshtastic Mesh Networking
 
-Meshtastic provides encrypted LoRa mesh networking for off-grid communication. A Meshtastic-compatible module connects via UART on the Grove port.
+Meshtastic provides encrypted LoRa mesh networking for off-grid communication. There are **three connectivity paths**:
 
-### Hardware Wiring (Grove HY2.0-4P — UART Mode)
+| Path | Connection | Use Case |
+|---|---|---|
+| **LoRa hat** | Cardputer Zero → UART → LoRa module | Direct serial, primary method |
+| **MonsterC5** | Cardputer Zero → USB/UART → MonsterC5 → LoRa | Through hub, multiplexed with GPS/C6L |
+| **C6L via BLE** | Cardputer Zero → BT 4.2 → C6L BLE 5.0 | Wireless, no cable needed — C6L runs Meshtastic node |
+
+The LoRa hat and NFC/CC1101 hat share the Grove port — only one at a time.
+
+### Hardware Wiring (LoRa Hat Grove Port — UART Mode)
 
 ```
-  Meshtastic      Cardputer Zero Grove
-  Module          (switch to UART mode)
+  Meshtastic      LoRa Hat Grove Port
+  Module          (UART mode)
   ──────────      ────────────────────
-  VCC          →   Pin 1 (VCC 3.3V/5V)
-  TX           →   Pin 2 (RX — UART receive)
-  RX           →   Pin 3 (TX — UART transmit)
-  GND          →   Pin 4 (GND)
+  VCC          →   VCC
+  TX           →   RX — UART receive
+  RX           →   TX — UART transmit
+  GND          →   GND
   
-  Note: Grove port must be switched from I2C to UART mode
-  (conflicts with PN532 NFC — not simultaneous)
+  Note: Swap to LoRa hat for Meshtastic, swap back 
+  to NFC/CC1101 hat for PN532/RFID2 — not simultaneous
 ```
 
 ### mesh-chat Architecture
@@ -1560,12 +1706,31 @@ systemd → zeroday-boot.service → zeroday-bootanim → Xorg + i3 → cyber_la
 
 ## 8f. M5MonsterC5 Integration
 
-The M5MonsterC5 is an ESP32C5-based add-on board running JanOS/projectZero firmware. It connects to the Cardputer Zero via USB-A or UART serial and provides a dedicated WiFi attack radio with its own suite of offensive tools.
+The M5MonsterC5 runs custom ZERO-DAY firmware forked from C5Lab/M5MonsterC5-CardputerADV. It acts as a **middle-manager hub** connecting Cardputer Zero to GPS, C6L, and Meshtastic — while also serving as the dedicated WiFi attack radio.
+
+### Hub Topology
+
+```
+Cardputer Zero (aarch64, main OS)
+  └── USB/UART ──→ M5MonsterC5 (ESP32C5, middle manager)
+                      ├── Grove IN  ← GPS Module v1.1 (AT6558 UART 9600)
+                      ├── Grove OUT → Unit C6L (ESP32-C6 Zigbee/BLE/LCD)
+                      └── LoRa radio → Meshtastic mesh node
+
+  └── BT 4.2/BLE ──→ Unit C6L (ESP32-C6, direct BLE — bypasses MonsterC5)
+                      └── C6L acts as Meshtastic node over BLE (no cables)
+```
 
 ### Communication
 
 - **Interface:** UART/USB serial at 115200 baud, 8N1
-- **Protocol:** Line-based text commands terminated with `\r\n`
+- **Protocol:** Line-based text commands with multiplexed prefixes
+- **Multiplexing:** Lines prefixed by source:
+  - (no prefix) = WiFi attack output (upstream protocol)
+  - `GPS:` = NMEA data from AT6558 (Grove IN)
+  - `C6L:` = data from/to Unit C6L (Grove OUT)
+  - `MESH:` = Meshtastic mesh messages
+- **Direct BLE path:** Cardputer Zero BT 4.2 → C6L BLE 5.0 — wireless control of C6L and Meshtastic meshchat without USB/MonsterC5
 - **Board detection:** `ping` command → expects `pong` response
 - **Auto-detection:** `monsterctl` scans `/dev/ttyUSB*`, `/dev/ttyACM*`, `/dev/ttyAMA0`
 
@@ -1573,44 +1738,37 @@ The M5MonsterC5 is an ESP32C5-based add-on board running JanOS/projectZero firmw
 
 ```bash
 # /usr/local/bin/monsterctl
-# Wraps all serial communication with the M5MonsterC5 board
-# Auto-detects the serial port on first run
-# Sends commands as line-based text over UART/USB serial
-# Parses responses and displays to user
-
-# Usage:
-#   monsterctl <subcommand> [args]
-
-# Subcommands:
-#   ping              - Verify board connection (expects pong)
-#   scan              - Scan WiFi networks
-#   select <id> [id]  - Select target AP(s) by scan index
-#   deauth            - Deauth attack on selected AP
-#   evil_twin         - Evil twin AP on selected target
-#   sae_overflow      - WPA3 SAE overflow attack
-#   handshake         - Capture WPA/WPA2 handshake
-#   sniffer           - WiFi packet sniffer
-#   blackout          - Mass deauth all visible APs
-#   sniffer_dog       - Follow and sniff a specific client
-#   karma             - Karma probe response attack
-#   beacon_spam       - Flood beacons with random SSIDs
-#   wardrive          - Wardrive scan with GPS
-#   nmap <target>     - Port scan via board
-#   arp_poison <target> - ARP poisoning
-#   rogue_ap          - Standalone rogue AP
-#   deauth_detect     - Detect deauth attacks
-#   passwords         - Show captured credentials
-#   hosts             - Show discovered hosts
-#   probes            - Show captured probe requests
-#   wifi_connect      - Connect board to WiFi
-#   wifi_disconnect   - Disconnect board from WiFi
-#   gps               - Show GPS coordinates
-#   channel_time <ms> - Set channel dwell time
-#   list_sd           - List files on board SD card
-#   list_html         - List captive portal HTML pages
-#   stop              - Stop all running attacks
-#   status            - Show board status
-#   flash <web|local|cardputer> - Flash firmware
+# M5MonsterC5 ESP32C5 middle-manager hub controller
+# Forked from C5Lab/M5MonsterC5-CardputerADV with custom ZERO-DAY firmware
+#
+# Communication modes:
+#   - Direct serial commands (WiFi attacks, same as upstream)
+#   - GPS passthrough: gps_passthrough, gps <type>
+#   - C6L routing: c6l_passthrough, c6l_cmd <command>
+#   - Meshtastic: mesh start/stop/send/config/status
+#   - Hub status: hub_status (shows Grove topology)
+#
+# WiFi attack subcommands (from upstream):
+#   ping, scan, select, deauth, evil_twin, sae_overflow,
+#   handshake, sniffer, blackout, sniffer_dog, karma,
+#   beacon_spam, rogue_ap, arp_poison, deauth_detect,
+#   wardrive, nmap, passwords, hosts, probes,
+#   wifi_connect, wifi_disconnect, stop, status
+#
+# Hub routing subcommands (ZERO-DAY additions):
+#   gps_passthrough     - Stream raw GPS NMEA from AT6558
+#   gps_raw             - Alias for gps_passthrough
+#   c6l_passthrough     - Stream C6L serial data
+#   c6l_cmd <command>   - Send command to C6L via MonsterC5
+#   c6l_ble <command>   - Send command to C6L via direct BLE (no MonsterC5)
+#   mesh start          - Start Meshtastic node
+#   mesh stop           - Stop Meshtastic node
+#   mesh send <d> <msg> - Send mesh message
+#   mesh status         - Show mesh node status
+#   mesh config          - Show mesh configuration
+#   hub_status          - Show Grove topology and passthrough
+#   flash local          - Flash ZERO-DAY custom firmware
+#   flash upstream       - Flash upstream JanOS firmware
 ```
 
 ### Serial Protocol Details
@@ -1621,99 +1779,38 @@ Cardputer Zero                          M5MonsterC5
 ─────────────────────────────────────►  UART/USB (115200 8N1)
   ping\r\n                           →  pong\r\n
   scan\r\n                            →  scan results (line-delimited)
-  select 1 3\r\n                      →  OK\r\n
   deauth\r\n                          →  [attack output]\r\n
+  gps_passthrough_start\r\n           →  GPS:$GPGGA...\r\n  (multiplexed)
+  c6l_cmd ZIGBEE_SCAN\r\n             →  C6L:[scan results]\r\n  (multiplexed)
+  mesh_start\r\n                      →  [mesh status]\r\n
+  mesh_send 1 hello\r\n               →  [mesh ack]\r\n
   stop\r\n                            →  OK\r\n
-  status\r\n                          →  [status JSON]\r\n
+  hub_status\r\n                      →  [topology info]\r\n
 ```
 
-### Board Wiring Options
+### Board Wiring
 
 | Connection | Pins / Port | Notes |
 |---|---|---|
 | **USB-A** | USB-A port on Cardputer Zero | Auto-detected as `/dev/ttyACM*` or `/dev/ttyUSB*` |
-| **UART** | GPIO TX/RX (Grove or ExtPort) | `/dev/ttyAMA0`, requires `serial0` config |
+| **UART** | GPIO TX/RX (Grove IN) | GPS Module v1.1 connected here |
+| **Grove OUT** | Grove HY2.0-4P | Unit C6L connected here |
 
 The `monsterctl` script auto-detects the port on startup. No manual configuration needed.
 
-### Interfaces
-
-The M5MonsterC5 board has two interfaces on ZERO-DAY OS:
+### Interface
 
 | Interface | Type | Use Case |
 |---|---|---|
-| `monsterctl` | CLI / automation | One command per invocation, scriptable, pipeline-friendly |
-| `install-janos` | Interactive TUI | Menu-driven, visual, real-time monitoring and browsing |
+| `monsterctl` | CLI / automation | All communication: WiFi attacks, GPS, C6L, mesh |
 
-`monsterctl` is the CLI/automation interface. `install-janos` launches the JanOS-app TUI (see section 8g), which provides a full interactive menu for scanning, attacking, wardriving, and browsing captured data.
+The JanOS-app TUI has been replaced by the custom ZERO-DAY firmware. All interaction is via `monsterctl`.
 
 ### Links
 
-- [M5MonsterC5-CardputerADV](https://github.com/C5Lab/M5MonsterC5-CardputerADV) — Hardware and firmware
-- [projectZero](https://github.com/C5Lab/projectZero) — JanOS/projectZero firmware
-
----
-
-## 8g. JanOS-app Integration
-
-The JanOS-app is a Python TUI application that provides an interactive front-end for the M5MonsterC5 board. It is **not included in the base image** (too large for the 512MB RAM constraint) and is installed on-demand via `install-janos`.
-
-### Script Architecture
-
-```bash
-# /usr/local/bin/install-janos
-# Manages the JanOS-app lifecycle: install, run, update, status
-#
-# Subcommands:
-#   install              - Clone JanOS-app from GitHub, install pyserial
-#   run [/dev/ttyUSB0]  - Launch the interactive TUI (auto-detect serial port)
-#   update               - Pull latest from GitHub
-#   status               - Check if JanOS-app is installed
-#
-# Installation directory: /opt/cardputer/janos-app/
-# Dependencies: pyserial (lightweight, <5MB RAM)
-# Alias: monsterctl janos → install-janos run
-```
-
-### Communication
-
-The JanOS-app communicates with the M5MonsterC5 board over UART at 115200 baud using the same command set as `monsterctl`. The TUI translates menu selections into serial commands:
-
-```
-JanOS-app TUI                     M5MonsterC5
-────────────────                  ───────────
-Menu: "Scan"            →        scan\r\n
-Menu: "Select target"   →        select <id>\r\n
-Menu: "Deauth"          →        deauth\r\n
-Menu: "Evil Twin"       →        evil_twin\r\n
-Menu: "Wardrive"        →        wardrive\r\n
-Menu: "Sniffer"         →        sniffer\r\n
-...
-Response parsed and rendered in TUI
-```
-
-### Why not bundled in the image
-
-| Factor | Reason |
-|---|---|
-| **RAM** | Python TUI adds ~25MB; every MB counts on 512MB |
-| **Image size** | JanOS-app repo adds ~15MB to the 3.5GB image |
-| **Update frequency** | JanOS-app updates independently of ZERO-DAY OS |
-| **Not always needed** | CLI users may never launch the TUI |
-
-The `install-janos` script downloads the TUI on first use, keeping the base image lean.
-
-### Relationship to monsterctl
-
-- **`monsterctl`** — CLI/automation interface. One command per invocation. Use in scripts, pipes, keybindings.
-- **`install-janos run`** — Interactive TUI. Menu-driven, visual, real-time. Use for exploration and monitoring.
-- **`monsterctl janos`** — Alias for `install-janos run`.
-
-Both send the same serial commands to the M5MonsterC5 board. Choose based on workflow.
-
-### Repository
-
-- [JanOS-app](https://github.com/D3h420/JanOS-app) — Interactive TUI for M5MonsterC5
+- [M5MonsterC5-CardputerADV](https://github.com/C5Lab/M5MonsterC5-CardputerADV) — upstream hardware/firmware
+- [ZERO-DAY fork](https://github.com/jayis1/M5MonsterC5-zeroday) — custom firmware with GPS, C6L routing, Meshtastic
+- [Firmware spec](firmware/monsterc5/README.md) — build instructions and serial protocol
 
 ---
 
@@ -1858,8 +1955,9 @@ The `yt` command provides YouTube search, streaming, and download on the Cardput
 
 | Mode | Setting | Playback | RAM |
 |---|---|---|---|
-| **LCD (default)** | `ZERODAY_DISPLAY=` (unset) | Audio-only via mpv `--no-video` | ~15MB |
-| **HDMI** | `export ZERODAY_DISPLAY=hdmi` | Fullscreen video via mpv | ~30MB |
+| **LCD only** | No HDMI connected (auto) | Audio-only via mpv `--no-video` | ~15MB |
+| **LCD + HDMI mirror** | HDMI plugged (auto-detected) | Fullscreen 1080P video via mpv on HDMI, LCD shows GUI | ~30MB |
+| **Force HDMI** | `export ZERODAY_DISPLAY=hdmi` | Fullscreen video even without hotplug | ~30MB |
 
 ### Playback Quality
 
@@ -1969,7 +2067,7 @@ Boot → systemd → zeroday-boot.service → zeroday-comp (Rust Wayland)
                                      ST7789v3 LCD (DRM/KMS)
 ```
 
-**zeroday-comp** is a custom Rust Wayland compositor built with Smithay 0.7, purpose-built for the Cardputer Zero. Current status: **stub launcher** that starts cyber_launcher directly. The full Smithay DRM/KMS rendering backend is work-in-progress (trait impls for SeatHandler, XdgShellHandler, BufferHandler, etc. are incomplete).
+**zeroday-comp** is a custom Rust Wayland compositor built with Smithay 0.7, purpose-built for the Cardputer Zero. It supports dual-output rendering (ST7789V LCD 320x170 + HDMI-A-1 1920x1080) with hotplug auto-detection. `hdmi.rs` monitors DRM uevent netlink for cable events and reconfigures outputs on the fly.
 
 | Feature | zeroday-comp | cage (Fallback) | Xorg+i3 (Fallback) |
 |---|---|---|---|
@@ -1979,8 +2077,11 @@ Boot → systemd → zeroday-boot.service → zeroday-comp (Rust Wayland)
 | Fn-key bindings | Compositor-level | Not available | i3-level |
 | Panic key (Fn+P) | Compositor-level | Script-level | Script-level |
 | Stealth (Fn+Space) | Backlight toggle | Not available | Not available |
-| DRM/KMS | Direct (WIP) | Direct | fbdev driver |
+| DRM/KMS | Dual-output (LCD+HDMI) | Single-output | fbdev + modesetting |
+| HDMI hotplug | Auto via uevent+SIGUSR1 | Manual (swaymsg) | Manual (xrandr) |
 | Multi-window | No (kiosk) | No (kiosk) | Yes (tiling) |
+| Fn+M (Jellyfin) | Compositor-level | Not available | Not available |
+| USB keyboard | Auto via SIGUSR2 | Standard evdev | Xorg InputClass |
 
 ### Tier 2: cage (Wayland Kiosk — Fallback)
 
@@ -1997,6 +2098,7 @@ zeroday-boot.service
     ├── zeroday-comp.service (Rust Wayland → cyber_launcher)
     │       └── OnFailure → zeroday-gui.service (cage → cyber_launcher)
     │               └── OnFailure → zeroday-tui.service (Xorg + i3 + stterm)
+    ├── zeroday-ble-remote.service (BLE GATT server — Android/iOS companion)
     └── If zeroday-comp binary missing → cage starts via zeroday-gui.service
 ```
 
@@ -2005,25 +2107,35 @@ zeroday-boot.service
 ```
 compositor/
 ├── src/
-│   ├── main.rs          # Entry point, client launcher (stub)
-│   │                      # Currently launches cyber_launcher directly
-│   │                      # Full Smithay compositor: WIP (trait impls needed)
+│   ├── main.rs          # Entry point (--hdmi-fps, --hdmi-auto, --client, --no-cursor)
+│   │                      # Spawns hdmi hotplug thread, passes ZERODAY_* env to client
+│   ├── comp.rs           # Smithay dual-output compositor (lcd_output + hdmi_output)
+│   │                      # AppData with hdmi_fps, hdmi_auto fields
+│   │                      # SeatHandler, KeyboardHandler, PointerHandler trait impls
+│   ├── hdmi.rs           # HDMI hotplug detection thread
+│   │                      # Monitors DRM uevent netlink + /sys/class/drm/card0-HDMI-A-1/status
+│   │                      # On plug: adds HDMI output, SIGUSR1 to compositor
+│   │                      # On unplug: removes HDMI output
 │   ├── input.rs          # Fn-key compositor-level bindings
 │   │                      # Fn+P  → panic (kill all + wipe)
 │   │                      # Fn+Space → stealth (toggle backlight)
 │   │                      # Fn+Tab → launcher toggle
 │   │                      # Fn+Q  → close window
+│   │                      # Fn+M  → Jellyfin TV (jellyfin-tv)
 │   │                      # Fn+O  → open OpenCode
 │   │                      # Plus quick-launch: Fn+N/B/S/W/C/I/A/G/R/Y/U
 │   └── panic_handler.rs  # SIGTERM/SIGHUP → kill children, clean exit
-├── Cargo.toml            # Smithay 0.7 (commented out), minimal deps for stub
+│                          # SIGUSR1 → reconfigure HDMI output
+│                          # SIGUSR2 → rescan input devices (USB hotplug)
+├── Cargo.toml            # Smithay 0.7, wayland-server, xkbcommon, libinput
 ├── Cross.toml            # cross-rs config for aarch64
 └── Cross.Dockerfile      # Custom Docker image with arm64 Wayland/DRM dev libs
 ```
 
 **Build:** `cross build --release --target aarch64-unknown-linux-gnu`
 **Binary:** ~1.0MB stripped (panic=abort, LTO, opt-level=z)
-**Current state:** Stub launcher. Smithay trait impls needed for full DRM/KMS rendering.
+**CLI flags:** `--hdmi-fps 30 --hdmi-auto --client <path> --no-cursor`
+**State:** Dual-output Wayland compositor with HDMI hotplug. Smithay 0.7 trait impls (SeatHandler, XdgShellHandler) in progress.
 
 ### zeroday-term Internals
 
@@ -2048,7 +2160,7 @@ terminal/
 Language:    Python 3
 Framework:   Pygame (SDL2 backend)
 Renderer:    SDL2 → Wayland (DRM/KMS) primary, X11 fallback
-Screen Size: 320x170 (1.9" ST7789v3) or 1920x1080 (HDMI)
+Screen Size: 320x170 (1.9" ST7789v3 LCD) + 1920x1080 (HDMI, mirror mode, hotplug auto-detected)
 
 File: /usr/local/bin/cyber_launcher
 ```
@@ -2410,7 +2522,7 @@ CONFIG_BRCMFMAC=y                     # WiFi driver
 CONFIG_NET_VENDOR_REALTEK=y           # RTL8152 (USB-Ethernet)
 
 # ─── Must Disable (save RAM/kernel size) ───
-CONFIG_DRM=n                          # No DRM (using fbdev)
+CONFIG_DRM=y                          # DRM/KMS required for dual-output (LCD + HDMI mirror)
 CONFIG_SOUND_OSS_CORE=n               # No OSS audio
 CONFIG_FB_RPISENSEDISPLAY=n            # No sense hat display
 CONFIG_USB_PRINTER=n                  # No printer support
@@ -2467,7 +2579,7 @@ CONFIG_MODULE_FORCE_UNLOAD=y          # Force unload to free RAM
 ```
 ╔══════════════════════════════════════════════════╗
 ║                                                  ║
-║   ZERO-DAY OS  v0.1-pre                         ║
+║   ZERO-DAY OS  v4.3.0-pre                         ║
 ║   M5Stack Cardputer Zero (CM0)                  ║
 ║                                                  ║
 ║   Battery: ████████░░ 82%   |  CPU: 800MHz     ║
@@ -2501,6 +2613,16 @@ Developer Machine (x86 Linux)
 │    → cross-rs Docker container                        │
 │    → aarch64-unknown-linux-gnu target                  │
 │    → terminal/target/.../release/zeroday-term (1.2MB)  │
+│                                                       │
+│  cd explorer && make cross-build                      │
+│    → cross-rs Docker container                        │
+│    → aarch64-unknown-linux-gnu target                  │
+│    → explorer/target/.../release/zeroday-fm (1.9MB)   │
+│                                                       │
+│  cd trail && make cross-build                          │
+│    → cross-rs Docker container                        │
+│    → aarch64-unknown-linux-gnu target                  │
+│    → trail/target/.../release/zeroday-trail (1.1MB)   │
 └─────────────────────────────────────────────────────┘
          │
          ▼
@@ -2511,6 +2633,8 @@ Developer Machine (x86 Linux)
 │  Docker container copies:                             │
 │    compositor/ → /project/compositor/                  │
 │    terminal/   → /project/terminal/                    │
+│    explorer/   → /project/explorer/                    │
+│    trail/      → /project/trail/                       │
 │    scripts/    → /project/scripts/                     │
 │    overlays/   → /project/overlays/                    │
 │    kernel/     → /project/kernel/                      │
@@ -2524,6 +2648,8 @@ Developer Machine (x86 Linux)
 │  Stage 3: ZERO-DAY core            → 15 min           │
 │    07-zeroday-comp: copies pre-built binary            │
 │    08-terminal-term: copies pre-built binary           │
+│    09-file-manager: copies pre-built binary            │
+│    10-trail-nav: copies pre-built binary               │
 │  Stage 4: hacking tools            → 40 min (Kali apt) │
 │  Stage 5: zero-touch               → 5 min            │
 │                                                       │
@@ -2577,14 +2703,20 @@ The Cardputer Zero has not yet shipped. These items require final hardware or pi
 - Captive portal evil twin (wifi-evil-twin)
 - Boot animation (zeroday-bootanim)
 - The TUI app (`cyber_launcher`)
-- zeroday-comp (Rust Wayland compositor — stub launcher, DRM backend WIP)
+- zeroday-comp (Rust Wayland compositor — dual-output LCD+HDMI, hotplug, Fn-key bindings)
 - zeroday-term (Rust terminal emulator — functional, DRM rendering WIP)
+- zeroday-fm (Rust TUI file explorer — functional, crossterm-based)
+- zeroday-trail (Rust breadcrumb navigation daemon — WiFi fingerprint exit guidance)
+- gps-ctl (M5Stack GPS Module v1.1 controller)
+- ext-display (External display manager — HDMI auto-hotplug via udev + zeroday-comp dual-output)
+- oled-ctl (M5Stack OLED Unit SH1107 driver — status panels, trail nav)
 - i3 configuration and keybindings
 - Panic system
 - Power management scripts
 - OpenCode session wrapper
 - pi-gen stage 3 (base system customization)
-- pi-gen stages 07-zeroday-comp and 08-terminal-term (pre-built binary install)
+- pi-gen stages 07-zeroday-comp, 08-terminal-term, 09-file-manager (pre-built binary install)
+- pi-gen stage 16-jellyfin-desktop (Qt5 desktop Jellyfin client built from source)
 - Kernel config (based on BCM2837, will need overlay adjustments)
 - USB gadget mode scripts (framework only, needs hardware test)
 - RTL8821CU dongle setup script

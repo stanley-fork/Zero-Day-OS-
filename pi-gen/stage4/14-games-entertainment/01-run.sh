@@ -12,7 +12,7 @@ install -m 755 -d "${ROOTFS_DIR}/opt/cardputer/loot/yt"
 install -m 755 -d "${ROOTFS_DIR}/opt/cardputer/music"
 
 # ── Copy game/entertainment scripts ──
-for script in yt doom-play retro-play; do
+for script in yt doom-play retro-play jellyfin-tv; do
     if [ -f "${PROJECT_ROOT}/scripts/hardware/${script}" ]; then
         install -m 755 "${PROJECT_ROOT}/scripts/hardware/${script}" "${ROOTFS_DIR}/usr/local/bin/"
         echo "[zeroday] Installed: ${script}"
@@ -214,3 +214,87 @@ Place ROM files in: `/opt/cardputer/retro/roms/<system>/`
 - Tab = Select
 - F1 = RetroArch menu
 RETROEOF
+
+# ── Jellyfin TV Media Box README ──
+mkdir -p "${ROOTFS_DIR}/opt/cardputer/loot/media"
+cat > "${ROOTFS_DIR}/opt/cardputer/loot/media/README.md" << 'TVEMODEOF'
+# TV Media Box Mode — ZERO-DAY OS
+
+## Quick Start
+```bash
+jellyfin-tv                   # Interactive menu (auto-detects Jellyfin Desktop)
+jellyfin-tv connect <url>     # Connect to Jellyfin server
+jellyfin-tv cast              # Start cast receiver
+jellyfin-tv play <url>        # Play URL directly (YouTube, etc.)
+jellyfin-tv local             # Play local media files
+jellyfin-tv status            # Check playback status
+jellyfin-tv off               # Stop all media
+```
+
+## Jellyfin Desktop (GUI Client)
+If `jellyfin-media-player` is installed (built in pi-gen stage 16):
+- Press `D` from the jellyfin-tv menu to launch the full GUI client
+- Or run: `jellyfinmediaplayer`
+- Works on HDMI (1080P) and LCD (320x170)
+- Uses Qt5 WebEngine for the Jellyfin web interface + mpv for playback
+
+## HDMI Auto-Detect
+When an HDMI monitor is connected:
+- Video plays at 1080P fullscreen
+- Audio outputs via HDMI
+- Set `ZERODAY_DISPLAY=hdmi` to force HDMI mode
+
+Without HDMI:
+- Audio-only mode (saves battery)
+- Music/radio/podcasts via speakers or headphone jack
+
+## Fn+M Shortcut
+Press Fn+M to launch the Jellyfin TV menu from the compositor.
+If `jellyfinmediaplayer` (GUI desktop client) is installed, pressing
+`D` in the menu launches the full Qt5 WebEngine client.
+
+## Supported Formats
+- Video: MP4, MKV, AVI, MOV, WebM (via mpv)
+- Audio: MP3, FLAC, WAV, OGG, AAC, M4A
+- Streaming: YouTube (via yt-dlp), HLS, direct URLs
+
+## Jellyfin Server Setup
+1. Install Jellyfin on your NAS/PC: https://jellyfin.org
+2. Run: `jellyfin-tv connect http://YOUR-SERVER:8096`
+3. Browse and play — or use cast mode from the Jellyfin app
+
+## Direct Play
+Any URL that mpv can play works:
+```bash
+jellyfin-tv play https://example.com/video.mp4
+jellyfin-tv play https://youtube.com/watch?v=VIDEO_ID
+```
+TVEMODEOF
+
+# ── Jellyfin mpv-shim config for HDMI (fallback client) ──
+install -m 755 -d "${ROOTFS_DIR}/opt/cardputer/config/jellyfin-mpv-shim"
+cat > "${ROOTFS_DIR}/opt/cardputer/config/jellyfin-mpv-shim/mpv-shim.conf" << 'SHIMCONF'
+# Jellyfin mpv-shim configuration for ZERO-DAY OS
+# Optimized for HDMI 1080P output on Cardputer Zero
+
+[mpv]
+# HDMI mode: fullscreen, hardware decode
+mpv_flags=--fs --no-border --vo=gpu --gpu-context=wayland --hwdec=auto --volume=80
+
+# Audio output: auto-select (HDMI or speakers)
+audio_device=auto
+
+[general]
+# Server discovery
+discover_mode=1
+SHIMCONF
+
+# Install jellyfin-mpv-shim via pip (NOT in Debian bookworm apt repos)
+# Provides cast receiver — fallback if jellyfin-media-player (stage 16) build is skipped
+on_chroot << EOF
+pip3 install --break-system-packages jellyfin-mpv-shim 2>/dev/null || \
+pip3 install jellyfin-mpv-shim 2>/dev/null || \
+echo "[zeroday] jellyfin-mpv-shim pip install deferred (install manually: pip3 install jellyfin-mpv-shim)"
+EOF
+
+echo "[zeroday] Games and entertainment installed."
