@@ -1,0 +1,330 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/c6l-middleman
+# Zero-Day OS → ESP32 middleman → C6L communication bridge
+#
+# Architecture:
+#   Zero-Day OS (Cardputer Zero)
+#     ↓ BLE (mesh-chat relay)
+#   M5MonsterC5 (ESP32C5 middleman)
+#     ↓ Grove I2C/UART + keyboard HID injection
+#   Unit C6L (ESP32-C6)
+#
+# The middleman ESP32 (MonsterC5) serves as:
+#   1. BLE mesh-chat relay node (receives messages from Zero-Day OS)
+#   2. C6L command router via Grove (I2C LCD + UART serial)
+#   3. Keyboard HID injector (types commands into C6L's USB host)
+#   4. Zigbee/Thread bridge (passthrough C6L 802.15.4 radio)
+#
+# Modes:
+#   relay   — Start BLE mesh-chat → C6L relay daemon
+#   inject  — Inject keystrokes into C6L via MonsterC5 HID
+#   zigbee  — Open Zigbee/Thread bridge via C6L
+#   mesh    — Open mesh-chat TUI with C6L forwarding
+#   status  — Show middleman connection status
+#
+# Environment:
+#   M5_UART       — Serial port for MonsterC5 (default: /dev/ttyAMA0)
+#   C6L_MODE      — auto|direct|ble (default: auto)
+#   C6L_BLE_MAC   — BLE MAC for direct C6L connection
+
+M5_UART="${M5_UART:-/dev/ttyAMA0}"
+M5_BAUD="${M5_BAUD:-115200}"
+C6L_MODE="${C6L_MODE:-auto}"
+C6L_BLE_MAC="${C6L_BLE_MAC:-}"
+MESH_PORT="${MESH_PORT:-/dev/ttyUSB1}"
+MESH_BAUD="${MESH_BAUD:-115200}"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+usage() {
+    cat <<EOF
+Usage: c6l-middleman <command> [args]
+
+Commands:
+  relay           Start mesh-chat → C6L relay daemon (foreground)
+  inject <text>   Inject keystrokes into C6L via MonsterC5 HID
+  zigbee [scan|sniffer|attack <panid>]
+                  Zigbee/Thread bridge via C6L
+  mesh [listen|chat|send <msg>]
+                  Mesh-chat with C6L forwarding
+  status          Show connection status
+  config          Show wiring and configuration
+
+Examples:
+  c6l-middleman relay                    # Start relay daemon
+  c6l-middleman inject 'sudo wifi scan'  # Type command into C6L
+  c6l-middleman zigbee scan              # Scan zigbee via C6L
+  c6l-middleman mesh chat                # Interactive mesh-chat TUI
+EOF
+    exit 1
+}
+
+m5_send() {
+    local cmd="$1"
+    if [ ! -e "${M5_UART}" ]; then
+        echo -e "${RED}MonsterC5 not found at ${M5_UART}${NC}"
+        echo "  Check connection or set M5_UART"
+        return 1
+    fi
+    echo "$cmd" > "${M5_UART}" 2>/dev/null
+    sleep 0.1
+}
+
+m5_read() {
+    local duration="${1:-5}"
+    timeout "$duration" cat "${M5_UART}" 2>/dev/null || true
+}
+
+c6l_cmd() {
+    local cmd="$1"
+    if [ "$C6L_MODE" = "ble" ] && [ -n "$C6L_BLE_MAC" ]; then
+        echo -e "${CYAN}[BLE → C6L] ${cmd}${NC}"
+        echo "$cmd" | bluetoothctl --timeout 5 <<< "connect ${C6L_BLE_MAC}" 2>/dev/null || \
+            gatttool -b "${C6L_BLE_MAC}" --char-write-req -a 0xFFE1 -n "$(echo -n "$cmd" | xxd -p)" 2>/dev/null || true
+    elif [ "$C6L_MODE" = "direct" ]; then
+        c6l-ctl serial <<< "$cmd" 2>/dev/null || \
+            echo "$cmd" > /dev/ttyUSB0 2>/dev/null || true
+    else
+        echo -e "${CYAN}[Grove → C6L via MonsterC5] ${cmd}${NC}"
+        m5_send "c6l_cmd ${cmd}"
+        sleep 0.5
+        m5_read 3 | grep -E "^C6L:" | sed 's/^C6L://'
+    fi
+}
+
+do_relay() {
+    echo -e "${GREEN}[relay] Starting mesh-chat → C6L relay daemon${NC}"
+    echo -e "${GREEN}[relay] Listening on ${MESH_PORT} for Meshtastic messages${NC}"
+    echo -e "${GREEN}[relay] Forwarding to C6L via ${C6L_MODE} mode${NC}"
+    echo -e "${YELLOW}[relay] Press Ctrl+C to stop${NC}"
+    
+    # Ensure MonsterC5 is in mesh relay mode
+    m5_send "mesh_start" 2>/dev/null || true
+    sleep 1
+    
+    # Background: monitor MonsterC5 serial for MESH: prefixed lines
+    # Forward mesh messages to C6L as keyboard input
+    while IFS= read -r line; do
+        case "$line" in
+            MESH:*)
+                msg="${line#MESH:}"
+                echo -e "${CYAN}[mesh → C6L] ${msg}${NC}"
+                c6l_cmd "LCD_MSG:${msg}"
+                ;;
+            C6L:*)
+                from_c6l="${line#C6L:}"
+                echo -e "${GREEN}[C6L → mesh] ${from_c6l}${NC}"
+                m5_send "mesh_send ${from_c6l}" 2>/dev/null || true
+                ;;
+            GPS:*)
+                echo -e "${YELLOW}[GPS] ${line#GPS:}${NC}"
+                ;;
+            *)
+                echo -e "${YELLOW}[serial] $line${NC}"
+                ;;
+        esac
+    done < <(timeout infinity cat "${M5_UART}" 2>/dev/null || echo "")
+    
+    echo -e "${YELLOW}[relay] Daemon stopped${NC}"
+}
+
+do_inject() {
+    local text="${1:-}"
+    if [ -z "$text" ]; then
+        echo -e "${RED}Usage: c6l-middleman inject <text>${NC}"
+        echo "  Example: c6l-middleman inject 'sudo wifi scan'"
+        exit 1
+    fi
+    
+    echo -e "${CYAN}[inject] Typing into C6L: ${text}${NC}"
+    
+    # Break text into individual characters for HID injection
+    # MonsterC5 firmware accepts: HID_TYPE:<text>
+    local i=0
+    local len=${#text}
+    while [ $i -lt $len ]; do
+        local char="${text:$i:1}"
+        case "$char" in
+            ' ') m5_send "HID_KEY:SPACE" ;;
+            '\n') m5_send "HID_KEY:ENTER" ;;
+            '\t') m5_send "HID_KEY:TAB" ;;
+            *) m5_send "HID_CHAR:${char}" ;;
+        esac
+        sleep 0.02
+        i=$((i + 1))
+    done
+    m5_send "HID_KEY:ENTER"
+    
+    echo -e "${GREEN}[inject] Done${NC}"
+}
+
+do_zigbee() {
+    local subcmd="${1:-scan}"
+    case "$subcmd" in
+        scan)
+            echo -e "${CYAN}[zigbee] Scanning for Zigbee/Thread networks...${NC}"
+            c6l_cmd "ZIGBEE_SCAN"
+            echo -e "${GREEN}[zigbee] Scan complete${NC}"
+            ;;
+        sniffer)
+            local outfile="${2:-${ZIGBEE_LOOT:-/opt/cardputer/loot/zigbee}/capture_$(date +%Y%m%d_%H%M%S).pcap}"
+            mkdir -p "$(dirname "$outfile")" 2>/dev/null || true
+            echo -e "${CYAN}[zigbee] Starting packet capture → ${outfile}${NC}"
+            echo -e "${YELLOW}[zigbee] Press Ctrl+C to stop${NC}"
+            c6l_cmd "ZIGBEE_SNIFFER_START"
+            trap 'c6l_cmd "ZIGBEE_SNIFFER_STOP"; echo -e "\n${GREEN}[zigbee] Capture stopped${NC}"; exit 0' INT
+            # Read streaming data from C6L
+            if [ "$C6L_MODE" = "auto" ]; then
+                m5_read infinity | grep "^C6L:ZB:" | sed 's/^C6L:ZB://' >> "$outfile"
+            else
+                c6l-ctl serial | grep "^ZB:" | sed 's/^ZB://' >> "$outfile"
+            fi
+            ;;
+        attack)
+            local target="${2:-}"
+            if [ -z "$target" ]; then
+                echo -e "${RED}Usage: c6l-middleman zigbee attack <panid>${NC}"
+                exit 1
+            fi
+            echo -e "${RED}[zigbee] Attacking PAN ID ${target}...${NC}"
+            echo -e "${YELLOW}[zigbee] This is for authorized penetration testing only${NC}"
+            c6l_cmd "ZIGBEE_ATTACK_${target}"
+            ;;
+        *)
+            echo -e "${RED}Unknown zigbee subcommand: ${subcmd}${NC}"
+            echo "Usage: c6l-middleman zigbee [scan|sniffer|attack <panid>]"
+            exit 1
+            ;;
+    esac
+}
+
+do_mesh() {
+    local subcmd="${1:-chat}"
+    case "$subcmd" in
+        listen)
+            echo -e "${CYAN}[mesh] Listening for mesh messages...${NC}"
+            echo -e "${YELLOW}[mesh] Forwarding received messages to C6L${NC}"
+            do_relay
+            ;;
+        chat)
+            echo -e "${GREEN}[mesh] Starting mesh-chat with C6L forwarding${NC}"
+            if command -v mesh-chat >/dev/null 2>&1; then
+                mesh-chat chat
+            else
+                echo -e "${RED}mesh-chat not found. Install with: mesh-setup install${NC}"
+                echo -e "${YELLOW}Falling back to serial monitor${NC}"
+                do_relay
+            fi
+            ;;
+        send)
+            local msg="${2:-}"
+            if [ -z "$msg" ]; then
+                echo -e "${RED}Usage: c6l-middleman mesh send <message>${NC}"
+                exit 1
+            fi
+            echo -e "${CYAN}[mesh → C6L] ${msg}${NC}"
+            m5_send "mesh_send ${msg}" 2>/dev/null || \
+                mesh-chat send "$msg" 2>/dev/null || true
+            c6l_cmd "LCD_MSG:${msg}"
+            ;;
+        *)
+            echo -e "${RED}Unknown mesh subcommand: ${subcmd}${NC}"
+            echo "Usage: c6l-middleman mesh [listen|chat|send <msg>]"
+            exit 1
+            ;;
+    esac
+}
+
+do_status() {
+    echo -e "${GREEN}=== C6L Middleman Status ===${NC}"
+    echo ""
+    echo -e "${CYAN}MonsterC5 (ESP32C5):${NC}"
+    if [ -e "${M5_UART}" ]; then
+        echo -e "  ${GREEN}● Serial: ${M5_UART} (connected)${NC}"
+    else
+        echo -e "  ${RED}● Serial: ${M5_UART} (not found)${NC}"
+    fi
+    
+    echo -e "${CYAN}C6L Mode: ${C6L_MODE}${NC}"
+    case "$C6L_MODE" in
+        auto)
+            echo "  Routing via MonsterC5 Grove OUT"
+            if command -v monsterctl >/dev/null 2>&1; then
+                echo -e "  ${GREEN}● monsterctl available${NC}"
+            else
+                echo -e "  ${YELLOW}● monsterctl not found (fallback to direct)${NC}"
+            fi
+            ;;
+        direct)
+            if [ -e /dev/ttyUSB0 ]; then
+                echo -e "  ${GREEN}● Direct USB: /dev/ttyUSB0 (connected)${NC}"
+            else
+                echo -e "  ${RED}● Direct USB: /dev/ttyUSB0 (not found)${NC}"
+            fi
+            ;;
+        ble)
+            if [ -n "$C6L_BLE_MAC" ]; then
+                echo -e "  ${GREEN}● BLE MAC: ${C6L_BLE_MAC}${NC}"
+            else
+                echo -e "  ${YELLOW}● BLE MAC: not configured${NC}"
+            fi
+            ;;
+    esac
+    
+    echo -e "${CYAN}Meshtastic:${NC}"
+    if [ -e "${MESH_PORT}" ]; then
+        echo -e "  ${GREEN}● Port: ${MESH_PORT} (connected)${NC}"
+    else
+        echo -e "  ${YELLOW}● Port: ${MESH_PORT} (not found)${NC}"
+    fi
+    
+    echo ""
+    echo -e "${CYAN}Grove topology:${NC}"
+    echo "  Cardputer Zero → MonsterC5 (Grove IN)"
+    echo "    ├─ GPS Module v1.1 (Grove IN, UART 9600)"
+    echo "    └─ Unit C6L (Grove OUT, I2C+UART 115200)"
+    echo "         ├─ 802.15.4 (Zigbee/Thread)"
+    echo "         ├─ BLE 5.0"
+    echo "         └─ WiFi 6"
+}
+
+do_config() {
+    echo -e "${GREEN}=== C6L Middleman Configuration ===${NC}"
+    echo ""
+    echo "Environment variables:"
+    echo "  M5_UART=${M5_UART}          (MonsterC5 serial port)"
+    echo "  M5_BAUD=${M5_BAUD}          (MonsterC5 baud rate)"
+    echo "  C6L_MODE=${C6L_MODE}             (auto|direct|ble)"
+    echo "  C6L_BLE_MAC=${C6L_BLE_MAC:-<unset>}"
+    echo "  MESH_PORT=${MESH_PORT}          (Meshtastic serial port)"
+    echo "  MESH_BAUD=${MESH_BAUD}          (Meshtastic baud rate)"
+    echo ""
+    echo "Grove wiring (MonsterC5 → C6L):"
+    echo "  Pin 1 (GND)    → GND"
+    echo "  Pin 2 (5V)     → 5V/VIN"
+    echo "  Pin 3 (Yellow) → SDA (I2C) / TX (UART)"
+    echo "  Pin 4 (White)  → SCL (I2C) / RX (UART)"
+    echo "  SW1=OFF, SW2=OFF for UART mode"
+    echo ""
+    echo "Communication paths:"
+    echo "  Zero-Day → BLE → MonsterC5 → Grove UART → C6L"
+    echo "  Zero-Day → Serial → MonsterC5 → Grove I2C → C6L LCD"
+    echo "  MonsterC5 → USB HID → C6L (keyboard injection)"
+    echo "  C6L → Grove UART → MonsterC5 → Serial → Zero-Day"
+    echo "  Mesh: Zero-Day → BLE/Meshtastic → MonsterC5 → mesh_chat"
+}
+
+case "${1:-}" in
+    relay)   do_relay ;;
+    inject)  do_inject "${2:-}" ;;
+    zigbee)  shift; do_zigbee "$@" ;;
+    mesh)    shift; do_mesh "$@" ;;
+    status)  do_status ;;
+    config)  do_config ;;
+    *)       usage ;;
+esac

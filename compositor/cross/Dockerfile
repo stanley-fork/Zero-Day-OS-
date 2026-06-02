@@ -18,6 +18,7 @@ RUN dpkg --add-architecture arm64 && \
         libxkbcommon-dev:arm64 \
         libpixman-1-dev:arm64 \
         libsystemd-dev:arm64 \
+        libseat-dev:arm64 \
         wayland-protocols \
         crossbuild-essential-arm64 \
         curl \

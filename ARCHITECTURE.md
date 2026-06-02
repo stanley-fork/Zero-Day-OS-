@@ -1835,6 +1835,132 @@ The JanOS-app TUI has been replaced by the custom ZERO-DAY firmware. All interac
 - [ZERO-DAY fork](https://github.com/jayis1/M5MonsterC5-zeroday) — custom firmware with GPS, C6L routing, Meshtastic
 - [Firmware spec](firmware/monsterc5/README.md) — build instructions and serial protocol
 
+### 8g. ESP32 Middleman Communication (Zero-Day → MonsterC5 → C6L)
+
+The M5MonsterC5 (ESP32C5) is the **middleman** between Zero-Day OS and Unit C6L (ESP32-C6). All C6L communication — BLE mesh-chat, Zigbee/Thread hacking, keyboard HID injection — flows through the MonsterC5.
+
+#### Communication Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                     Zero-Day OS (aarch64)                        │
+│                   Cardputer Zero (main OS)                        │
+│                                                                   │
+│  Fn+D → st -e c6l-ctl serial    (C6L serial console)            │
+│  Fn+X → st -e mesh-chat          (LoRa mesh messaging)          │
+│  Fn+Z → sudo c6l-ctl zigbee scan (Zigbee/Thread scanning)       │
+│  Fn+U → webui-toggle             (WebUI on/off, OFF by default) │
+│  Fn+B → sudo bt-scan             (Bluetooth scanning)           │
+│                                                                   │
+│  BLE Remote API (port 0xFE5E):                                   │
+│    Android companion → gatt_server.py → shell commands           │
+└─────────────┬────────────────┬───────────────────┬───────────────┘
+              │                │                   │
+         USB/UART          BT 4.2                  │
+              │           (direct BLE)              │
+              ▼                │                    │
+┌─────────────────────────────────────────────────┘                │
+│                  M5MonsterC5 (ESP32C5)                            │
+│                  ── THE MIDDLEMAN ──                              │
+│                                                                   │
+│  Serial MUX:                                                     │
+│    GPS:    ← Grove IN (UART 9600, AT6558)                       │
+│    C6L:    → Grove OUT (I2C+UART 115200, ESP32-C6)             │
+│    MESH:   ← internal LoRa radio                                 │
+│    WiFi:   internal ESP32C5 radio (attack mode)                  │
+│    HID:    → keyboard injection into C6L USB host                │
+│                                                                   │
+│  Commands from Zero-Day OS:                                      │
+│    c6l_cmd <CMD>     → forwards to C6L via Grove UART           │
+│    mesh_send <msg>  → sends via LoRa mesh                       │
+│    HID_CHAR:<c>     → types character into C6L                   │
+│    HID_KEY:ENTER    → sends special key to C6L                  │
+└─────────────┬───────────────────┬───────────────┬───────────────┘
+              │   Grove OUT        │               │ LoRa
+              │   (I2C+UART)      │               │
+              ▼                    ▼               ▼
+┌──────────────────┐  ┌──────────────────────────────────────────┐
+│  Unit C6L        │  │  Meshtastic Mesh Network                 │
+│  (ESP32-C6)      │  │  (LoRa 433/868/915 MHz)                  │
+│                  │  │                                          │
+│  802.15.4 radio  │  │  Other mesh nodes receive and            │
+│  (Zigbee/Thread) │  │  relay messages to their hosts           │
+│  BLE 5.0 radio   │  └──────────────────────────────────────────┘
+│  WiFi 6 radio    │
+│  0.96" LCD       │
+└──────────────────┘
+```
+
+#### Communication Paths
+
+| Path | Direction | Interface | Use Case |
+|---|---|---|---|
+| Zero-Day → MonsterC5 | Outbound | USB/UART 115200 | WiFi attacks, hub commands |
+| Zero-Day → MonsterC5 → C6L | Outbound | Serial MUX → Grove OUT | Zigbee scan, BLE scan, LCD text |
+| Zero-Day → MonsterC5 → Mesh | Outbound | Serial MUX → LoRa | mesh-chat messages |
+| Zero-Day ← MonsterC5 | Inbound | USB/UART | WiFi scan results, GPS NMEA |
+| Zero-Day ← C6L ← MonsterC5 | Inbound | Grove OUT → Serial MUX | Zigbee captures, C6L responses |
+| Zero-Day ← Mesh ← MonsterC5 | Inbound | LoRa → Serial MUX | Received mesh messages |
+| MonsterC5 → C6L (HID) | Outbound | USB HID | Keyboard injection into C6L |
+| Zero-Day → C6L (direct BLE) | Outbound | BT 4.2/BLE 5.0 | Bypass MonsterC5 entirely |
+
+#### c6l-middleman Script
+
+The `c6l-middleman` script (`/usr/local/bin/c6l-middleman`) provides the unified interface for all middleman communication:
+
+```bash
+# Start relay daemon (mesh-chat → C6L forwarding)
+c6l-middleman relay
+
+# Inject keystrokes into C6L via MonsterC5 HID
+c6l-middleman inject 'sudo wifi scan'
+
+# Zigbee/Thread via C6L
+c6l-middleman zigbee scan
+c6l-middleman zigbee sniffer
+c6l-middleman zigbee attack <panid>
+
+# Mesh-chat with C6L forwarding
+c6l-middleman mesh chat
+c6l-middleman mesh send "hello world"
+
+# Connection status and wiring
+c6l-middleman status
+c6l-middleman config
+```
+
+#### Fn-key Bindings (Compositor-Level)
+
+| Key | Action | Script |
+|---|---|---|
+| Fn+P | Panic wipe | `/usr/local/bin/panic` |
+| Fn+Space | Stealth backlight toggle | (built-in) |
+| Fn+Tab | Cyber launcher TUI | `cyber_launcher` |
+| Fn+Enter | Terminal (tmux) | `st -e tmux` |
+| Fn+Q | Kill window | (compositor) |
+| Fn+O | OpenCode session | `opencode-session` |
+| Fn+L | Lock screen | `device-lock lock` |
+| Fn+N | Nmap quick scan | `sudo net-quickscan` |
+| Fn+B | Bluetooth scan | `sudo bt-scan` |
+| Fn+S | Shell listen (C2) | `quick-c2 listen` |
+| Fn+W | WiFi toggle | `cardputer-wifi-toggle` |
+| Fn+C | Camera snapshot | `cam-snap` |
+| Fn+I | IDE (micro editor) | `st -e micro` |
+| Fn+H | IR scan | `sudo ir-scan` |
+| Fn+D | C6L serial console | `st -e c6l-ctl serial` |
+| Fn+X | Mesh-chat TUI | `st -e mesh-chat` |
+| Fn+Z | Zigbee scan | `sudo c6l-ctl zigbee scan` |
+| Fn+A | OpenCode ask mode | (compositor) |
+| Fn+G | DOOM | `st -e doom-play play` |
+| Fn+R | Retro gaming | `st -e retro-play` |
+| Fn+Y | YouTube | `st -e yt search` |
+| Fn+U | WebUI toggle | `webui-toggle` |
+| Fn+M | Jellyfin MediaBox | `jellyfin-tv` |
+
+#### WebUI (OFF by default)
+
+The WebUI HTTPS dashboard (port 8443) is disabled at boot for security. `Fn+U` runs `webui-toggle` which enables/starts or stops/disables the service. Default credentials: `operator` / `zeroday`.
+
 ---
 
 ## 8h. Ragnar Reconnaissance Scripts
@@ -2101,9 +2227,16 @@ Boot → systemd → zeroday-boot.service → zeroday-comp (Rust Wayland)
 | Panic key (Fn+P) | Compositor-level | Script-level | Script-level |
 | Stealth (Fn+Space) | Backlight toggle | Not available | Not available |
 | DRM/KMS | Dual-output (LCD+HDMI) | Single-output | fbdev + modesetting |
-| HDMI hotplug | Auto via uevent+SIGUSR1 | Manual (swaymsg) | Manual (xrandr) |
-| Multi-window | No (kiosk) | No (kiosk) | Yes (tiling) |
-| Fn+M (Jellyfin) | Compositor-level | Not available | Not available |
+| HDMI hotplug | DRM connector events | Manual (swaymsg) | Manual (xrandr) |
+| Multi-window | Yes (Wayland XDG) | No (kiosk) | Yes (tiling) |
+| Cursor | Auto (USB mouse detect) | Standard | Standard |
+| Fn+O (OpenCode) | Compositor-level | Not available | Not available |
+| Fn+I (IDE) | Compositor-level | Not available | Not available |
+| Fn+H (IR Scan) | Compositor-level | Not available | Not available |
+| Fn+D (C6L serial) | Compositor-level | Not available | Not available |
+| Fn+X (Mesh Chat) | Compositor-level | Not available | Not available |
+| Fn+Z (Zigbee Scan) | Compositor-level | Not available | Not available |
+| Fn+U (WebUI toggle) | Compositor-level | Not available | Not available |
 | USB keyboard | Auto via SIGUSR2 | Standard evdev | Xorg InputClass |
 
 ### Tier 2: cage (Wayland Kiosk — Fallback)

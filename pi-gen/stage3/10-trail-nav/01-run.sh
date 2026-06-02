@@ -58,6 +58,12 @@ if [ -f "${PROJECT_ROOT}/scripts/hardware/c6l-ctl" ]; then
     echo "[zeroday-trail] Installed /usr/local/bin/c6l-ctl (ESP32-C6)"
 fi
 
+# Install C6L middleman (Zero-Day → ESP32 → C6L bridge)
+if [ -f "${PROJECT_ROOT}/scripts/hardware/c6l-middleman" ]; then
+    install -m 755 "${PROJECT_ROOT}/scripts/hardware/c6l-middleman" "${ROOTFS_DIR}/usr/local/bin/c6l-middleman"
+    echo "[zeroday-trail] Installed /usr/local/bin/c6l-middleman (ESP32 middleman bridge)"
+fi
+
 # Create trail data directories
 install -m 755 -d "${ROOTFS_DIR}/opt/cardputer/trail/breadcrumbs"
 install -m 755 -d "${ROOTFS_DIR}/opt/cardputer/trail/gps-tracks"

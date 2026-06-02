@@ -187,3 +187,4 @@ package-lock.json
 # Rust build target directories
 **/target/
 target/
+*.zip

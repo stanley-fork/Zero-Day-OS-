@@ -1,0 +1,39 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/webui-toggle
+# Toggle ZERO-DAY OS WebUI dashboard on/off
+# WebUI is OFF by default for security (exposes HTTPS API)
+# Fn+U from compositor calls this script
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo -e "${RED}Root required. Run: sudo webui-toggle${NC}"
+    exit 1
+fi
+
+if systemctl is-active --quiet webui.service 2>/dev/null; then
+    echo -e "${YELLOW}[webui] Stopping WebUI dashboard...${NC}"
+    systemctl stop webui.service
+    systemctl disable webui.service 2>/dev/null || true
+    echo -e "${RED}[webui] WebUI OFF — not listening on any port${NC}"
+    echo -e "${YELLOW}[webui] Re-enable with: webui-toggle${NC}"
+else
+    echo -e "${YELLOW}[webui] Starting WebUI dashboard...${NC}"
+    echo -e "${YELLOW}[webui] WARNING: HTTPS API exposed on port 8443${NC}"
+    echo -e "${YELLOW}[webui] Default login: operator / zeroday${NC}"
+    sleep 1
+    systemctl enable webui.service 2>/dev/null || true
+    systemctl start webui.service 2>/dev/null || {
+        echo -e "${RED}[webui] Failed to start. Check: journalctl -u webui${NC}"
+        exit 1
+    }
+    IP=$(ip -4 addr show wlan0 2>/dev/null | grep -oP '(?<=inet )\S+' | head -1)
+    IP=${IP:-$(ip -4 addr show eth0 2>/dev/null | grep -oP '(?<=inet )\S+' | head -1)}
+    IP=${IP:-"<your-ip>"}
+    echo -e "${GREEN}[webui] WebUI ON — https://${IP}:8443${NC}"
+    echo -e "${GREEN}[webui] Stop with: webui-toggle${NC}"
+fi

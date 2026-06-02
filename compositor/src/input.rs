@@ -18,7 +18,11 @@ pub enum FnAction {
     ShellListen,
     WifiToggle,
     CamSnap,
+    Ide,
     IrScan,
+    C6L,
+    MeshChat,
+    ZigbeeScan,
     OpenCodeAsk,
     Doom,
     Retro,
@@ -45,10 +49,14 @@ mod keycodes {
     pub const I: u32 = 23;
     pub const A: u32 = 30;
     pub const G: u32 = 34;
+    pub const H: u32 = 35;
     pub const R: u32 = 19;
     pub const Y: u32 = 21;
     pub const M: u32 = 50;
     pub const U: u32 = 22;
+    pub const D: u32 = 32;
+    pub const X: u32 = 45;
+    pub const Z: u32 = 44;
 }
 
 #[derive(Debug, Clone)]
@@ -88,7 +96,11 @@ impl InputHandler {
             keycodes::S => Some(FnAction::ShellListen),
             keycodes::W => Some(FnAction::WifiToggle),
             keycodes::C => Some(FnAction::CamSnap),
-            keycodes::I => Some(FnAction::IrScan),
+            keycodes::I => Some(FnAction::Ide),
+            keycodes::H => Some(FnAction::IrScan),
+            keycodes::D => Some(FnAction::C6L),
+            keycodes::X => Some(FnAction::MeshChat),
+            keycodes::Z => Some(FnAction::ZigbeeScan),
             keycodes::A => Some(FnAction::OpenCodeAsk),
             keycodes::G => Some(FnAction::Doom),
             keycodes::R => Some(FnAction::Retro),
@@ -131,12 +143,16 @@ impl InputHandler {
             FnAction::ShellListen => ("st", vec!["-e", "quick-c2", "listen"]),
             FnAction::WifiToggle => ("cardputer-wifi-toggle", vec![]),
             FnAction::CamSnap => ("cam-snap", vec![]),
+            FnAction::Ide => ("st", vec!["-e", "micro"]),
             FnAction::IrScan => ("st", vec!["-e", "sudo", "ir-scan"]),
+            FnAction::C6L => ("st", vec!["-e", "c6l-ctl", "serial"]),
+            FnAction::MeshChat => ("st", vec!["-e", "mesh-chat"]),
+            FnAction::ZigbeeScan => ("st", vec!["-e", "sudo", "c6l-ctl", "zigbee", "scan"]),
             FnAction::OpenCodeAsk => return,
             FnAction::Doom => ("st", vec!["-e", "doom-play", "play"]),
             FnAction::Retro => ("st", vec!["-e", "retro-play"]),
             FnAction::Youtube => ("st", vec!["-e", "yt", "search"]),
-            FnAction::WebUI => ("webui", vec![]),
+            FnAction::WebUI => ("webui-toggle", vec![]),
             FnAction::MediaBox => ("jellyfin-tv", vec![]),
             FnAction::None => return,
         };

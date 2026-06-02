@@ -1,4 +1,5 @@
 mod comp;
+mod drm_be;
 mod hdmi;
 mod input;
 mod panic_handler;

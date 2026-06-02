@@ -1,0 +1,103 @@
+#!/bin/bash
+set -euo pipefail
+# /usr/local/bin/cardputer-wifi-connect
+# Non-interactive WiFi configuration helper
+
+SSID="${1:-}"
+PSK="${2:-}"
+WPA_CONF="/etc/wpa_supplicant/wpa_supplicant.conf"
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "error:root_required"
+    exit 1
+fi
+
+if [ -z "$SSID" ]; then
+    echo "error:ssid_required"
+    exit 1
+fi
+
+# Ensure wifi is unblocked
+rfkill unblock wifi 2>/dev/null || true
+
+# Find interface
+IFACE=$(iw dev | awk '/Interface/{print $2}' | head -1)
+if [ -z "$IFACE" ]; then
+    echo "error:no_wifi_interface"
+    exit 1
+fi
+
+ip link set "$IFACE" up 2>/dev/null || true
+
+# Kill existing wpa_supplicant & dhclient processes
+killall wpa_supplicant 2>/dev/null || true
+killall dhclient 2>/dev/null || true
+
+# Generate WPA configuration
+mkdir -p /etc/wpa_supplicant
+
+cat > "$WPA_CONF" << EOF
+ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+update_config=1
+country=US
+EOF
+
+if [ -z "$PSK" ]; then
+    cat >> "$WPA_CONF" << EOF
+
+network={
+    ssid="$SSID"
+    key_mgmt=NONE
+}
+EOF
+else
+    # Attempt to use wpa_passphrase
+    if WPA_HASH=$(wpa_passphrase "$SSID" "$PSK" 2>/dev/null | grep 'psk=' | tail -1 | sed 's/.*psk=//;s/[[:space:]]*//'); then
+        if echo "$WPA_HASH" | grep -qE '^[0-9a-f]{64}$'; then
+            WPA_LINE="psk=$WPA_HASH"
+        else
+            WPA_LINE="psk=\"$PSK\""
+        fi
+    else
+        WPA_LINE="psk=\"$PSK\""
+    fi
+
+    cat >> "$WPA_CONF" << EOF
+
+network={
+    ssid="$SSID"
+    $WPA_LINE
+    key_mgmt=WPA-PSK
+}
+EOF
+fi
+
+# Start wpa_supplicant
+wpa_supplicant -B -i "$IFACE" -c "$WPA_CONF" >/dev/null 2>&1
+
+# Wait up to 10 seconds for association
+SUCCESS=0
+for i in {1..10}; do
+    if iw dev "$IFACE" link 2>/dev/null | grep -q "Connected to"; then
+        SUCCESS=1
+        break
+    fi
+    sleep 1
+done
+
+if [ $SUCCESS -ne 1 ]; then
+    echo "error:association_timeout"
+    exit 1
+fi
+
+# Request DHCP
+if dhclient "$IFACE" >/dev/null 2>&1 || udhcpc -i "$IFACE" -n >/dev/null 2>&1; then
+    IP=$(ip -4 addr show "$IFACE" 2>/dev/null | grep inet | awk '{print $2}' | cut -d/ -f1 | head -1)
+    if [ -n "$IP" ]; then
+        echo "connected:$IP"
+    else
+        echo "error:dhcp_failed"
+    fi
+else
+    echo "error:dhcp_execution_failed"
+fi

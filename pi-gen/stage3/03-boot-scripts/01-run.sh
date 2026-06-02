@@ -11,7 +11,7 @@ mkdir -p "${BIN}"
 
 for script in panic zeroday-boot zeroday-bootanim first-boot power-mode tamper-watch \
     cardputer-wifi-setup cardputer-wifi-toggle stealth-backlight-toggle usb-gadget-mode \
-    mac-rotate loot-organize opencode-session opencode-ask device-lock webui; do
+    mac-rotate loot-organize opencode-session opencode-ask device-lock webui webui-toggle; do
     if [ -f "${SCRIPT_SRC}/system/${script}" ]; then
         cp "${SCRIPT_SRC}/system/${script}" "${BIN}/${script}"
         chmod +x "${BIN}/${script}"
@@ -96,8 +96,9 @@ for svc in webui.service ragnar.service; do
 done
 
 # zeroday-gui and zeroday-tui are created by stage4
-# Disable ragnar by default (user must install Ragnar repo first)
+# Disable WebUI by default (exposes HTTP — enable manually with: systemctl enable webui)
 on_chroot << EOF
+systemctl disable webui.service 2>/dev/null || true
 systemctl disable ragnar.service 2>/dev/null || true
 EOF
 
